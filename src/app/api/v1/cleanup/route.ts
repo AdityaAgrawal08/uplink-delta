@@ -1,0 +1,121 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getDb } from "@/lib/mongodb";
+import { deleteObject } from "@/lib/r2";
+
+export async function POST(req: NextRequest) {
+  return performCleanup();
+}
+
+export async function GET(req: NextRequest) {
+  return performCleanup();
+}
+
+async function performCleanup() {
+  try {
+    const db = await getDb();
+    const now = new Date();
+    const workerId = `worker_${crypto.randomUUID().substring(0, 8)}`;
+    const lockDurationMs = 5 * 60 * 1000; // 5 minutes
+    const cleanupLockedUntil = new Date(Date.now() + lockDurationMs);
+
+    // 1. Identify and lock expired shares
+    // Candidates are:
+    // - status in [ACTIVE, EXPIRED, CREATED, DELETE_FAILED] and expired
+    // - OR status in PENDING_DELETE and lock has expired (crashed worker)
+    const lockQuery = {
+      $or: [
+        {
+          status: { $in: ["ACTIVE", "EXPIRED", "CREATED", "DELETE_FAILED"] },
+          expiresAt: { $lt: now },
+        },
+        {
+          status: "PENDING_DELETE",
+          cleanupLockedUntil: { $lt: now },
+        },
+      ],
+    };
+
+    const lockUpdate = {
+      $set: {
+        status: "PENDING_DELETE",
+        cleanupLockedUntil,
+        cleanupWorkerId: workerId,
+        lastRetryAt: now,
+      },
+      $inc: { retryCount: 1 },
+    };
+
+    const lockResult = await db.collection("shares").updateMany(lockQuery, lockUpdate);
+    
+    if (lockResult.matchedCount === 0) {
+      return NextResponse.json({ message: "No expired shares found for cleanup" });
+    }
+
+    // 2. Fetch locked shares for this worker
+    const lockedShares = await db
+      .collection("shares")
+      .find({
+        status: "PENDING_DELETE",
+        cleanupWorkerId: workerId,
+      })
+      .toArray();
+
+    const results = [];
+
+    // 3. Process deletions
+    for (const share of lockedShares) {
+      const deleteSuccess = await deleteObject(share.objectKey);
+      
+      if (deleteSuccess) {
+        // Deletion succeeded: Update status to DELETED
+        await db.collection("shares").updateOne(
+          { shareId: share.shareId },
+          {
+            $set: {
+              status: "DELETED",
+              cleanupLockedUntil: null,
+              cleanupWorkerId: null,
+            },
+          }
+        );
+        results.push({ shareId: share.shareId, status: "DELETED" });
+      } else {
+        // Deletion failed: Transition to DELETE_FAILED and release lock
+        await db.collection("shares").updateOne(
+          { shareId: share.shareId },
+          {
+            $set: {
+              status: "DELETE_FAILED",
+              cleanupLockedUntil: null,
+              cleanupWorkerId: null,
+              lastErrorCode: "R2_DELETE_FAILED",
+              lastErrorMessage: "Failed to delete file from R2 object storage",
+            },
+          }
+        );
+        results.push({ shareId: share.shareId, status: "DELETE_FAILED" });
+      }
+    }
+
+    // 4. Also clean up old upload sessions metadata that are completed or expired
+    // upload_sessions status REMOVED transition
+    const uploadSessionsCleanupResult = await db.collection("upload_sessions").deleteMany({
+      $or: [
+        { status: "COMPLETED", createdAt: { $lt: new Date(Date.now() - 24 * 3600 * 1000) } }, // Keep logs for 24h
+        { status: { $in: ["PENDING", "UPLOADING", "VERIFY_FAILED", "EXPIRED"] }, uploadExpiresAt: { $lt: now } }
+      ]
+    });
+
+    return NextResponse.json({
+      message: "Cleanup task completed",
+      workerId,
+      sharesMatched: lockResult.matchedCount,
+      sharesLocked: lockedShares.length,
+      actions: results,
+      uploadSessionsCleaned: uploadSessionsCleanupResult.deletedCount,
+    });
+  } catch (error: any) {
+    console.error("Cleanup job error:", error);
+    return NextResponse.json({ error: error?.message || "Internal Server Error" }, { status: 500 });
+  }
+}

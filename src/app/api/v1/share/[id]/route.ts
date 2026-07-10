@@ -1,0 +1,50 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getDb } from "@/lib/mongodb";
+
+export async function GET(
+  req: NextRequest,
+  props: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await props.params;
+
+    const db = await getDb();
+
+    // Find the active share
+    const share = await db.collection("shares").findOne({ shareId: id });
+    if (!share) {
+      return NextResponse.json({ error: "Share not found" }, { status: 404 });
+    }
+
+    const now = new Date();
+    if (new Date(share.expiresAt) < now || share.status === "EXPIRED" || share.status === "DELETED") {
+      if (share.status !== "EXPIRED" && share.status !== "DELETED" && share.status !== "PENDING_DELETE") {
+        await db.collection("shares").updateOne({ shareId: id }, { $set: { status: "EXPIRED" } });
+      }
+      return NextResponse.json({ error: "This share link has expired" }, { status: 410 });
+    }
+
+    if (share.status !== "ACTIVE") {
+      return NextResponse.json(
+        { error: `This share is not active (${share.status})` },
+        { status: 400 }
+      );
+    }
+
+    // Return non-sensitive metadata only
+    return NextResponse.json({
+      shareId: share.shareId,
+      filename: share.filename,
+      size: share.size,
+      mimeType: share.mimeType,
+      hashValue: share.hashValue,
+      expiresAt: share.expiresAt,
+      passwordRequired: !!share.passwordHash,
+      downloadsCount: share.downloadsCount,
+      downloadLimit: share.downloadLimit,
+    });
+  } catch (error: any) {
+    console.error("Error in GET /api/v1/share/[id]:", error);
+    return NextResponse.json({ error: error?.message || "Internal Server Error" }, { status: 500 });
+  }
+}
