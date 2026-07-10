@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, initIndexes } from "@/lib/mongodb";
 import { redis } from "@/lib/redis";
-import { getPresignedUploadUrl } from "@/lib/r2";
+import { getPresignedUploadUrl, getPresignedMultipartUrls } from "@/lib/r2";
 import {
   generateShareId,
   sanitizeFilename,
@@ -19,6 +19,8 @@ export async function POST(req: NextRequest) {
       password,
       expiresInSeconds,
       downloadLimit,
+      partsCount,
+      checksumCrc64nvme,
     } = body;
 
     // 1. Basic Validations
@@ -35,10 +37,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Enforce limits: Max 200 MB for guest sharing
-    const MAX_SIZE = 200 * 1024 * 1024; // 200MB
+    const isMultipart = partsCount !== undefined && Number(partsCount) > 1;
+
+    // Enforce limits: Max 500 MB for multipart directories, 200 MB for guest single-part files
+    const MAX_SIZE = isMultipart ? 500 * 1024 * 1024 : 200 * 1024 * 1024;
     if (size > MAX_SIZE) {
-      return NextResponse.json({ error: "File size exceeds 200 MB guest limit" }, { status: 400 });
+      return NextResponse.json(
+        { error: `File size exceeds ${isMultipart ? "500 MB directory" : "200 MB file"} limit` },
+        { status: 400 }
+      );
     }
 
     // Expiry verification
@@ -61,14 +68,12 @@ export async function POST(req: NextRequest) {
     const redisIdempotencyKey = idempotencyKey ? `idempotency:${idempotencyKey}` : null;
 
     if (redisIdempotencyKey) {
-      // Try to acquire the atomic lock (30s TTL)
       const lockAcquired = await redis.set(redisIdempotencyKey, "PROCESSING", {
         nx: true,
         ex: 30,
       });
 
       if (lockAcquired === null) {
-        // Lock already exists, fetch the value
         const status = await redis.get(redisIdempotencyKey);
         if (status === "PROCESSING") {
           return NextResponse.json(
@@ -77,13 +82,12 @@ export async function POST(req: NextRequest) {
           );
         }
         if (status) {
-          // Return the cached successful response
           return NextResponse.json(status);
         }
       }
     }
 
-    // Initialize MongoDB index checks (safe to run, will only create if not present)
+    // Initialize MongoDB index checks
     await initIndexes();
 
     const db = await getDb();
@@ -106,14 +110,25 @@ export async function POST(req: NextRequest) {
     const uploadExpiresAt = new Date(Date.now() + 2 * 3600 * 1000); // Upload session valid for 2h
     const uploadUrlExpiry = 900; // Presigned URL valid for 15m
 
-    // 4. Generate Presigned R2 Upload URL
-    // S3-compatible PUT presigned URL requiring x-amz-checksum-sha256
-    const uploadUrl = await getPresignedUploadUrl(
-      objectKey,
-      uploadUrlExpiry,
-      mimeType || "application/octet-stream",
-      hashValue
-    );
+    let uploadId = "";
+    let uploadUrl = null;
+    let uploadUrls = null;
+
+    // 4. Generate Presigned R2 Upload URLs (Single-part vs Multipart)
+    if (isMultipart) {
+      const parts = Number(partsCount);
+      const mpDetails = await getPresignedMultipartUrls(objectKey, parts);
+      uploadId = mpDetails.uploadId;
+      uploadUrls = mpDetails.urls;
+    } else {
+      uploadId = `upload_${crypto.randomUUID().replace(/-/g, "")}`;
+      uploadUrl = await getPresignedUploadUrl(
+        objectKey,
+        uploadUrlExpiry,
+        mimeType || "application/octet-stream",
+        hashValue
+      );
+    }
 
     // 5. Database Insert (Share & Upload Session)
     const shareDoc = {
@@ -127,7 +142,7 @@ export async function POST(req: NextRequest) {
       objectKey,
       hashAlgorithm: "SHA-256",
       hashValue,
-      checksumCrc64nvme: null,
+      checksumCrc64nvme: checksumCrc64nvme || null,
       passwordHash,
       status: "CREATED",
       createdAt: date,
@@ -146,7 +161,6 @@ export async function POST(req: NextRequest) {
       lastErrorMessage: null,
     };
 
-    const uploadId = `upload_${crypto.randomUUID().replace(/-/g, "")}`;
     const uploadSessionDoc = {
       uploadId,
       shareId,
@@ -154,6 +168,8 @@ export async function POST(req: NextRequest) {
       uploadUrlExpiresAt: new Date(Date.now() + uploadUrlExpiry * 1000),
       status: "PENDING",
       createdAt: date,
+      isMultipart,
+      partsCount: isMultipart ? Number(partsCount) : 1,
     };
 
     await db.collection("shares").insertOne(shareDoc);
@@ -163,6 +179,7 @@ export async function POST(req: NextRequest) {
       shareId,
       uploadId,
       uploadUrl,
+      uploadUrls,
       objectKey,
       filename,
       storageFilename,
@@ -176,8 +193,9 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json(responseData, { status: 201 });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error in POST /api/v1/share/init:", error);
-    return NextResponse.json({ error: error?.message || "Internal Server Error" }, { status: 500 });
+    const errMsg = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 }

@@ -4,8 +4,15 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+import { crc64nvmeBase64 } from "./crc64";
 
 const accessKeyId = process.env.R2_ACCESS_KEY_ID;
 const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
@@ -116,8 +123,6 @@ export interface ObjectDetails {
 export async function checkObjectExists(objectKey: string): Promise<ObjectDetails> {
   if (!s3Client) {
     // Mock local dev file check
-    const fs = require("fs");
-    const path = require("path");
     const localPath = path.join(process.cwd(), "uploads_dev", objectKey);
     if (fs.existsSync(localPath)) {
       const stats = fs.statSync(localPath);
@@ -151,18 +156,17 @@ export async function checkObjectExists(objectKey: string): Promise<ObjectDetail
       contentType: response.ContentType,
       exists: true,
     };
-  } catch (error: any) {
-    if (error.name === "NotFound" || error.$metadata?.httpStatusCode === 404) {
+  } catch (error: unknown) {
+    const err = error as { name?: string; $metadata?: { httpStatusCode?: number }; message?: string };
+    if (err.name === "NotFound" || err.$metadata?.httpStatusCode === 404) {
       return { size: 0, exists: false, error: "Object not found" };
     }
-    return { size: 0, exists: false, error: error?.message || "Error checking object" };
+    return { size: 0, exists: false, error: err.message || "Error checking object" };
   }
 }
 
 export async function deleteObject(objectKey: string): Promise<boolean> {
   if (!s3Client) {
-    const fs = require("fs");
-    const path = require("path");
     const localPath = path.join(process.cwd(), "uploads_dev", objectKey);
     try {
       if (fs.existsSync(localPath)) {
@@ -189,5 +193,126 @@ export async function deleteObject(objectKey: string): Promise<boolean> {
   } catch (error) {
     console.error(`Failed to delete object ${objectKey} from R2:`, error);
     return false;
+  }
+}
+
+export async function getPresignedMultipartUrls(
+  objectKey: string,
+  partsCount: number,
+  uploadIdFromReq: string | null = null
+): Promise<{ uploadId: string; urls: string[] }> {
+  if (!s3Client) {
+    const uploadId = uploadIdFromReq || `mock_upload_${crypto.randomUUID().replace(/-/g, "")}`;
+    const urls = [];
+    for (let i = 1; i <= partsCount; i++) {
+      urls.push(
+        `${process.env.APP_URL || "http://localhost:3000"}/api/v1/mock-r2-upload?key=${encodeURIComponent(objectKey)}&uploadId=${uploadId}&partNumber=${i}`
+      );
+    }
+    return { uploadId, urls };
+  }
+
+  let uploadId = uploadIdFromReq;
+  if (!uploadId) {
+    const createCommand = new CreateMultipartUploadCommand({
+      Bucket: getBucketName(),
+      Key: objectKey,
+      ChecksumAlgorithm: "CRC64NVME",
+    });
+    const createResponse = await s3Client.send(createCommand);
+    uploadId = createResponse.UploadId!;
+  }
+
+  const urls = [];
+  for (let i = 1; i <= partsCount; i++) {
+    const partCommand = new UploadPartCommand({
+      Bucket: getBucketName(),
+      Key: objectKey,
+      UploadId: uploadId,
+      PartNumber: i,
+      ChecksumAlgorithm: "CRC64NVME",
+    });
+    const url = await getSignedUrl(s3Client, partCommand, { expiresIn: 3600 });
+    urls.push(url);
+  }
+
+  return { uploadId, urls };
+}
+
+export interface PartInfo {
+  partNumber: number;
+  etag: string;
+  checksum?: string;
+}
+
+export async function completeMultipartUpload(
+  objectKey: string,
+  uploadId: string,
+  parts: PartInfo[]
+): Promise<{ etag?: string; checksumCrc64nvme?: string; error?: string }> {
+  if (!s3Client) {
+    const localPath = path.join(process.cwd(), "uploads_dev", objectKey);
+    const dir = path.dirname(localPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    try {
+      const writeStream = fs.createWriteStream(localPath);
+      
+      parts.sort((a, b) => a.partNumber - b.partNumber);
+
+      for (const part of parts) {
+        const partPath = path.join(process.cwd(), "uploads_dev", `${objectKey}.part_${part.partNumber}`);
+        if (!fs.existsSync(partPath)) {
+          writeStream.end();
+          return { error: `Part file ${part.partNumber} not found` };
+        }
+        const chunk = fs.readFileSync(partPath);
+        writeStream.write(chunk);
+        fs.unlinkSync(partPath);
+      }
+      writeStream.end();
+
+      // Small delay to ensure stream is closed fully
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const completedContent = fs.readFileSync(localPath);
+      const checksum = crc64nvmeBase64(completedContent);
+      
+      fs.writeFileSync(
+        localPath + ".meta",
+        JSON.stringify({ sha256: "multipart_check_in_db", checksumCrc64nvme: checksum, size: completedContent.length })
+      );
+
+      return { etag: "mock_etag", checksumCrc64nvme: checksum };
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : "Failed to write assembled mock file";
+      return { error: errMsg };
+    }
+  }
+
+  try {
+    const command = new CompleteMultipartUploadCommand({
+      Bucket: getBucketName(),
+      Key: objectKey,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: parts.map(p => ({
+          PartNumber: p.partNumber,
+          ETag: p.etag,
+          ChecksumCRC64NVME: p.checksum,
+        })),
+      },
+    });
+    const response = await s3Client.send(command);
+    return {
+      etag: response.ETag,
+      checksumCrc64nvme: response.ChecksumCRC64NVME,
+    };
+  } catch (error: unknown) {
+    console.error("Failed to complete multipart upload in R2:", error);
+    const errMsg = error instanceof Error ? error.message : "Complete multipart upload failed";
+    return { error: errMsg };
   }
 }

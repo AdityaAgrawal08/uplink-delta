@@ -153,8 +153,9 @@ export async function POST(
       hashValue: share.hashValue,
       expiresAt: share.expiresAt,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error in POST /api/v1/share/[id]/authorize-download:", error);
-    return NextResponse.json({ error: error?.message || "Internal Server Error" }, { status: 500 });
+    const errMsg = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 }

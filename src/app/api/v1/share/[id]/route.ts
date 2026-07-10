@@ -43,8 +43,9 @@ export async function GET(
       downloadsCount: share.downloadsCount,
       downloadLimit: share.downloadLimit,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error in GET /api/v1/share/[id]:", error);
-    return NextResponse.json({ error: error?.message || "Internal Server Error" }, { status: 500 });
+    const errMsg = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 }

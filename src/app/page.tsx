@@ -181,9 +181,10 @@ export default function Home() {
       
       const generatedLink = `${window.location.origin}/share/${shareId}`;
       setShareLink(generatedLink);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      setError(err?.message || "An unexpected error occurred during upload.");
+      const errMsg = err instanceof Error ? err.message : "An unexpected error occurred during upload.";
+      setError(errMsg);
       setHashing(false);
       setUploading(false);
       setUploadProgress(0);

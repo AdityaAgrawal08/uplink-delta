@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import path from "path";
 import { argon2id } from "hash-wasm";
 
 export async function hashPassword(password: string): Promise<string> {
@@ -79,7 +80,6 @@ export function generateShareId(): string {
 export function sanitizeFilename(filename: string): string {
   if (!filename) return "unnamed_file";
   // Extract basename to prevent path traversal
-  const path = require("path");
   const base = path.basename(filename);
   // Restrict to whitelisted characters [a-zA-Z0-9._-]
   let sanitized = base.replace(/[^a-zA-Z0-9._-]/g, "_");

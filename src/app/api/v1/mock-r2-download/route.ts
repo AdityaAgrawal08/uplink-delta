@@ -35,8 +35,9 @@ export async function GET(req: NextRequest) {
       status: 200,
       headers,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Local mock R2 download failed:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const errMsg = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 }

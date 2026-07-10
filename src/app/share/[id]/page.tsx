@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, use } from "react";
+import React, { useState, useEffect, use, useCallback } from "react";
+import Link from "next/link";
 import {
   FileDown,
   ShieldAlert,
@@ -42,7 +43,7 @@ export default function ShareView({ params }: { params: Promise<{ id: string }> 
   // Time left state
   const [timeLeft, setTimeLeft] = useState("");
 
-  const fetchMeta = async () => {
+  const fetchMeta = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
@@ -53,16 +54,18 @@ export default function ShareView({ params }: { params: Promise<{ id: string }> 
       }
       const data = await response.json();
       setMeta(data);
-    } catch (err: any) {
-      setError(err?.message || "Link is invalid or has expired.");
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : "Link is invalid or has expired.";
+      setError(errMsg);
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchMeta();
-  }, [id]);
+  }, [fetchMeta]);
 
   useEffect(() => {
     if (!meta) return;
@@ -133,9 +136,10 @@ export default function ShareView({ params }: { params: Promise<{ id: string }> 
         // Refresh metadata to reflect download count changes
         fetchMeta();
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      setError(err?.message || "Failed to authorize transfer");
+      const errMsg = err instanceof Error ? err.message : "Failed to authorize transfer";
+      setError(errMsg);
     } finally {
       setAuthorizing(false);
     }
@@ -188,12 +192,12 @@ export default function ShareView({ params }: { params: Promise<{ id: string }> 
             </div>
             <h2 className="text-lg font-bold text-white mb-2">Access Denied</h2>
             <p className="text-zinc-400 text-sm max-w-xs mx-auto mb-6">{error}</p>
-            <a
+            <Link
               href="/"
               className="inline-flex items-center gap-2 text-indigo-400 hover:text-indigo-300 text-sm font-semibold transition-colors"
             >
               <ArrowLeft className="h-4 w-4" /> Go back to Uploader
-            </a>
+            </Link>
           </div>
         ) : meta?.passwordRequired && !previewUrl && !meta.filename ? (
           // Wait, this shouldn't happen unless we are not authenticated yet.
@@ -215,6 +219,7 @@ export default function ShareView({ params }: { params: Promise<{ id: string }> 
                   {meta.mimeType === "application/pdf" ? (
                     <iframe src={previewUrl} className="w-full h-[450px] border-none" />
                   ) : (
+                    // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={previewUrl}
                       alt={meta.filename}

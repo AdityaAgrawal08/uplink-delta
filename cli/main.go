@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/url"
@@ -18,30 +19,39 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"uplink-cli/pkg/crc64"
+	"uplink-cli/pkg/tarball"
 )
 
 // ANSI stripping regex
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
+// Chunk threshold for multipart (10 MB)
+const ChunkSize = 10 * 1024 * 1024
+
 type InitRequest struct {
-	Filename         string `json:"filename"`
-	Size             int64  `json:"size"`
-	MimeType         string `json:"mimeType"`
-	HashValue        string `json:"hashValue"`
-	Password         string `json:"password,omitempty"`
-	ExpiresInSeconds int    `json:"expiresInSeconds"`
-	DownloadLimit    int    `json:"downloadLimit"`
+	Filename          string `json:"filename"`
+	Size              int64  `json:"size"`
+	MimeType          string `json:"mimeType"`
+	HashValue         string `json:"hashValue"`
+	Password          string `json:"password,omitempty"`
+	ExpiresInSeconds  int    `json:"expiresInSeconds"`
+	DownloadLimit     int    `json:"downloadLimit"`
+	PartsCount        int    `json:"partsCount,omitempty"`
+	ChecksumCrc64nvme string `json:"checksumCrc64nvme,omitempty"`
 }
 
 type InitResponse struct {
-	ShareId         string `json:"shareId"`
-	UploadId        string `json:"uploadId"`
-	UploadUrl       string `json:"uploadUrl"`
-	ObjectKey       string `json:"objectKey"`
-	Filename         string `json:"filename"`
-	StorageFilename string `json:"storageFilename"`
-	ExpiresAt       string `json:"expiresAt"`
-	UploadExpiresAt string `json:"uploadExpiresAt"`
+	ShareId         string   `json:"shareId"`
+	UploadId        string   `json:"uploadId"`
+	UploadUrl       string   `json:"uploadUrl,omitempty"`
+	UploadUrls      []string `json:"uploadUrls,omitempty"`
+	ObjectKey       string   `json:"objectKey"`
+	Filename        string   `json:"filename"`
+	StorageFilename string   `json:"storageFilename"`
+	ExpiresAt       string   `json:"expiresAt"`
+	UploadExpiresAt string   `json:"uploadExpiresAt"`
 }
 
 type ShareMeta struct {
@@ -70,6 +80,16 @@ type AuthorizeResponse struct {
 	ExpiresAt   string `json:"expiresAt"`
 }
 
+type PartInfo struct {
+	PartNumber int    `json:"partNumber"`
+	ETag       string `json:"etag"`
+	Checksum   string `json:"checksum,omitempty"`
+}
+
+type ConfirmRequest struct {
+	Parts []PartInfo `json:"parts,omitempty"`
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -91,24 +111,21 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println("R2-Uplink CLI Client")
+	fmt.Println("R2-Uplink CLI Client (v7.1)")
 	fmt.Println("Usage:")
-	fmt.Println("  uplink send <filepath> [flags]")
+	fmt.Println("  uplink send <filepath-or-directory> [flags]")
 	fmt.Println("  uplink receive <share-link-or-id> [destination-path] [flags]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  send      Uploads a file to the platform")
-	fmt.Println("  receive   Downloads a file from the platform")
+	fmt.Println("  send      Uploads a file or directory to the platform")
+	fmt.Println("  receive   Downloads a file or directory from the platform")
 }
 
-// Clean filename printed to terminal
 func cleanPrintName(name string) string {
 	return ansiRegex.ReplaceAllString(name, "")
 }
 
-// Strip path traversal parts from file name
 func sanitizeFilename(name string) string {
 	base := filepath.Base(name)
-	// Replace directory separators and double dots
 	base = strings.ReplaceAll(base, "/", "")
 	base = strings.ReplaceAll(base, "\\", "")
 	base = strings.ReplaceAll(base, "..", "")
@@ -132,30 +149,75 @@ func handleSend(args []string) {
 	}
 
 	if sendCmd.NArg() < 1 {
-		fmt.Println("Error: File path is required. Usage: uplink send <filepath>")
+		fmt.Println("Error: File or directory path is required. Usage: uplink send <path>")
 		os.Exit(1)
 	}
 
-	filePath := sendCmd.Arg(0)
+	inputPath := sendCmd.Arg(0)
+	var filePath string
+	var isDirectory bool
+	var originalName string
 
-	// Verify file
-	fileInfo, err := os.Stat(filePath)
+	// Verify path
+	fileInfo, err := os.Stat(inputPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Printf("Error: File '%s' does not exist.\n", filePath)
+			fmt.Printf("Error: Path '%s' does not exist.\n", inputPath)
 		} else {
-			fmt.Printf("Error accessing file: %v\n", err)
+			fmt.Printf("Error accessing path: %v\n", err)
 		}
 		os.Exit(1)
 	}
 
+	originalName = fileInfo.Name()
+
 	if fileInfo.IsDir() {
-		fmt.Println("Error: Directories are not supported in Milestone 1 (available in Milestone 2).")
-		os.Exit(1)
+		isDirectory = true
+		fmt.Printf("Detected directory. Packaging '%s' to tarball...\n", originalName)
+		
+		// Create temporary file
+		tempFile, err := os.CreateTemp("", "uplink_tarball_*.tar.gz")
+		if err != nil {
+			fmt.Printf("Error creating temp tarball: %v\n", err)
+			os.Exit(1)
+		}
+		tempFile.Close()
+		filePath = tempFile.Name()
+		defer os.Remove(filePath) // Ensure cleanup on exit
+
+		// Open write descriptor
+		outFd, err := os.OpenFile(filePath, os.O_WRONLY, 0600)
+		if err != nil {
+			fmt.Printf("Error opening temp tarball for writing: %v\n", err)
+			os.Exit(1)
+		}
+
+		err = tarball.Pack(inputPath, outFd)
+		outFd.Close()
+		if err != nil {
+			fmt.Printf("Failed to package directory: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Re-stat the temporary archive file
+		fileInfo, err = os.Stat(filePath)
+		if err != nil {
+			fmt.Printf("Error stating archive: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Directory packaged successfully. Archive size: %d bytes\n", fileInfo.Size())
+	} else {
+		filePath = inputPath
 	}
 
-	if fileInfo.Size() > 200*1024*1024 {
-		fmt.Println("Error: File size exceeds 200MB limit for guest sharing.")
+	// Enforce sizes
+	maxAllowedSize := int64(200 * 1024 * 1024)
+	if isDirectory {
+		maxAllowedSize = int64(500 * 1024 * 1024) // 500 MB for directories
+	}
+
+	if fileInfo.Size() > maxAllowedSize {
+		fmt.Printf("Error: Upload exceeds maximum size limit of %d MB.\n", maxAllowedSize/(1024*1024))
 		os.Exit(1)
 	}
 
@@ -166,20 +228,46 @@ func handleSend(args []string) {
 	}
 	defer file.Close()
 
-	// Pass 1: Compute SHA-256
+	isMultipart := fileInfo.Size() > ChunkSize
+	partsCount := 1
+	if isMultipart {
+		partsCount = int((fileInfo.Size() + ChunkSize - 1) / ChunkSize)
+	}
+
+	// Pass 1: Compute hashes (SHA-256 and CRC64NVME if multipart)
 	fmt.Print("Analyzing file integrity (Pass 1/2)... ")
-	hasher := sha256.New()
-	_, err = io.Copy(hasher, file)
+	shaHasher := sha256.New()
+	var crcHasher hash.Hash64
+	var multiWriter io.Writer
+
+	if isMultipart {
+		crcHasher = crc64.New()
+		multiWriter = io.MultiWriter(shaHasher, crcHasher)
+	} else {
+		multiWriter = shaHasher
+	}
+
+	_, err = io.Copy(multiWriter, file)
 	if err != nil {
 		fmt.Printf("Error hashing file: %v\n", err)
 		os.Exit(1)
 	}
-	hashBytes := hasher.Sum(nil)
-	hashHex := hex.EncodeToString(hashBytes)
-	hashBase64 := base64.StdEncoding.EncodeToString(hashBytes)
-	fmt.Printf("Done.\nSHA-256: %s\n", hashHex)
 
-	// Reset file pointer
+	hashBytes := shaHasher.Sum(nil)
+	hashHex := hex.EncodeToString(hashBytes)
+
+	var crcBase64 string
+	if isMultipart {
+		crcBytes := crcHasher.Sum(nil)
+		crcBase64 = base64.StdEncoding.EncodeToString(crcBytes)
+	}
+
+	fmt.Printf("Done.\nSHA-256: %s\n", hashHex)
+	if isMultipart {
+		fmt.Printf("CRC64NVME: %s (Multipart chunks: %d)\n", crcBase64, partsCount)
+	}
+
+	// Reset file descriptor pointer
 	_, err = file.Seek(0, 0)
 	if err != nil {
 		fmt.Printf("Error resetting file pointer: %v\n", err)
@@ -188,14 +276,24 @@ func handleSend(args []string) {
 
 	// 2. Call /api/v1/share/init
 	fmt.Print("Initializing upload session... ")
+	filenameToSend := originalName
+	if isDirectory {
+		filenameToSend = originalName + ".tar.gz"
+	}
+
 	initReq := InitRequest{
-		Filename:         fileInfo.Name(),
+		Filename:         filenameToSend,
 		Size:             fileInfo.Size(),
 		MimeType:         "application/octet-stream",
 		HashValue:        hashHex,
 		Password:         *passwordFlag,
 		ExpiresInSeconds: *expiryFlag,
 		DownloadLimit:    *limitFlag,
+	}
+
+	if isMultipart {
+		initReq.PartsCount = partsCount
+		initReq.ChecksumCrc64nvme = crcBase64
 	}
 
 	jsonBytes, err := json.Marshal(initReq)
@@ -213,10 +311,9 @@ func handleSend(args []string) {
 		os.Exit(1)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// Generate random Idempotency-Key
 	req.Header.Set("Idempotency-Key", fmt.Sprintf("cli_%d_%s", time.Now().UnixNano(), hashHex[:8]))
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Network error: %v\n", err)
@@ -238,44 +335,124 @@ func handleSend(args []string) {
 	}
 	fmt.Println("Done.")
 
-	// 3. Upload File to Storage via PUT (Pass 2)
-	fmt.Println("Streaming file to storage (Pass 2/2)...")
+	// 3. Streaming upload (Single-part vs Multipart)
+	var confirmReq ConfirmRequest
 
-	// Custom reader to track upload progress
-	progressReader := &ProgressReader{
-		reader: file,
-		total:  fileInfo.Size(),
+	if isMultipart {
+		fmt.Println("Streaming chunks in multipart mode to storage (Pass 2/2)...")
+		confirmReq.Parts = make([]PartInfo, partsCount)
+		buffer := make([]byte, ChunkSize)
+		totalUploaded := int64(0)
+
+		for i := 1; i <= partsCount; i++ {
+			n, readErr := file.Read(buffer)
+			if n > 0 {
+				chunk := buffer[:n]
+				
+				// Compute part checksum
+				partHasher := crc64.New()
+				partHasher.Write(chunk)
+				partChecksumBytes := partHasher.Sum(nil)
+				partChecksumBase64 := base64.StdEncoding.EncodeToString(partChecksumBytes)
+
+				partUploadUrl := initResp.UploadUrls[i-1]
+				putReq, err := http.NewRequest("PUT", partUploadUrl, bytes.NewReader(chunk))
+				if err != nil {
+					fmt.Printf("\nError creating chunk request: %v\n", err)
+					os.Exit(1)
+				}
+				putReq.Header.Set("Content-Type", "application/octet-stream")
+				putReq.Header.Set("x-amz-checksum-crc64nvme", partChecksumBase64)
+				putReq.ContentLength = int64(n)
+
+				uploadClient := &http.Client{Timeout: 10 * time.Minute}
+				putResp, err := uploadClient.Do(putReq)
+				if err != nil {
+					fmt.Printf("\nChunk %d upload network error: %v\n", i, err)
+					os.Exit(1)
+				}
+				defer putResp.Body.Close()
+
+				if putResp.StatusCode != 200 && putResp.StatusCode != 204 {
+					bodyBytes, _ := io.ReadAll(putResp.Body)
+					fmt.Printf("\nChunk %d upload failed (status %d): %s\n", i, putResp.StatusCode, string(bodyBytes))
+					os.Exit(1)
+				}
+
+				etag := putResp.Header.Get("ETag")
+				if etag == "" {
+					etag = fmt.Sprintf("\"%s-%d\"", initResp.UploadId, i) // Fallback ETag format
+				}
+
+				confirmReq.Parts[i-1] = PartInfo{
+					PartNumber: i,
+					ETag:       etag,
+					Checksum:   partChecksumBase64,
+				}
+
+				totalUploaded += int64(n)
+				percent := int((float64(totalUploaded) / float64(fileInfo.Size())) * 100)
+				fmt.Printf("\rProgress: %d%% (%d/%d bytes)", percent, totalUploaded, fileInfo.Size())
+			}
+			if readErr != nil && readErr != io.EOF {
+				fmt.Printf("\nError reading file: %v\n", readErr)
+				os.Exit(1)
+			}
+		}
+		fmt.Println("\nAll parts uploaded successfully.")
+	} else {
+		fmt.Println("Streaming file in single-part mode to storage (Pass 2/2)...")
+		progressReader := &ProgressReader{
+			reader: file,
+			total:  fileInfo.Size(),
+		}
+
+		putReq, err := http.NewRequest("PUT", initResp.UploadUrl, progressReader)
+		if err != nil {
+			fmt.Printf("Error creating PUT request: %v\n", err)
+			os.Exit(1)
+		}
+		
+		// SHA-256 header required for single-part
+		hashBase64 := base64.StdEncoding.EncodeToString(hashBytes)
+		putReq.Header.Set("Content-Type", "application/octet-stream")
+		putReq.Header.Set("x-amz-checksum-sha256", hashBase64)
+		putReq.ContentLength = fileInfo.Size()
+
+		uploadClient := &http.Client{Timeout: 30 * time.Minute}
+		putResp, err := uploadClient.Do(putReq)
+		if err != nil {
+			fmt.Printf("\nUpload network error: %v\n", err)
+			os.Exit(1)
+		}
+		defer putResp.Body.Close()
+
+		if putResp.StatusCode != 200 && putResp.StatusCode != 204 {
+			bodyBytes, _ := io.ReadAll(putResp.Body)
+			fmt.Printf("\nUpload failed (status %d): %s\n", putResp.StatusCode, string(bodyBytes))
+			os.Exit(1)
+		}
+		fmt.Println("\nUpload to storage completed.")
 	}
 
-	putReq, err := http.NewRequest("PUT", initResp.UploadUrl, progressReader)
-	if err != nil {
-		fmt.Printf("Error creating PUT request: %v\n", err)
-		os.Exit(1)
-	}
-	putReq.Header.Set("Content-Type", "application/octet-stream")
-	putReq.Header.Set("x-amz-checksum-sha256", hashBase64)
-	putReq.ContentLength = fileInfo.Size()
-
-	// High timeout for upload
-	uploadClient := &http.Client{Timeout: 30 * time.Minute}
-	putResp, err := uploadClient.Do(putReq)
-	if err != nil {
-		fmt.Printf("\nUpload network error: %v\n", err)
-		os.Exit(1)
-	}
-	defer putResp.Body.Close()
-
-	if putResp.StatusCode != 200 && putResp.StatusCode != 204 {
-		bodyBytes, _ := io.ReadAll(putResp.Body)
-		fmt.Printf("\nUpload failed (status %d): %s\n", putResp.StatusCode, string(bodyBytes))
-		os.Exit(1)
-	}
-	fmt.Println("\nUpload to storage completed.")
-
-	// 4. Call /confirm
+	// 4. Confirm upload
 	fmt.Print("Confirming transfer integrity... ")
 	confirmUrl := fmt.Sprintf("%s/api/v1/share/%s/confirm", serverUrl, initResp.ShareId)
-	confirmResp, err := client.Post(confirmUrl, "application/json", nil)
+
+	var confirmBody io.Reader = nil
+	if isMultipart {
+		cBytes, _ := json.Marshal(confirmReq)
+		confirmBody = bytes.NewBuffer(cBytes)
+	}
+
+	confirmReqObj, err := http.NewRequest("POST", confirmUrl, confirmBody)
+	if err != nil {
+		fmt.Printf("Error creating confirm request: %v\n", err)
+		os.Exit(1)
+	}
+	confirmReqObj.Header.Set("Content-Type", "application/json")
+
+	confirmResp, err := client.Do(confirmReqObj)
 	if err != nil {
 		fmt.Printf("Network error: %v\n", err)
 		os.Exit(1)
@@ -295,13 +472,13 @@ func handleSend(args []string) {
 
 func handleReceive(args []string) {
 	recvCmd := flag.NewFlagSet("receive", flag.ExitOnError)
-	forceFlag := recvCmd.Bool("force", false, "Force overwrite if file exists")
-	forceShortFlag := recvCmd.Bool("f", false, "Force overwrite if file exists (shortcut)")
-	renameFlag := recvCmd.Bool("rename", false, "Rename downloaded file with numerical suffix if it exists")
-	renameShortFlag := recvCmd.Bool("r", false, "Rename downloaded file with numerical suffix if it exists (shortcut)")
+	forceFlag := recvCmd.Bool("force", false, "Force overwrite if file/directory exists")
+	forceShortFlag := recvCmd.Bool("f", false, "Force overwrite (shortcut)")
+	renameFlag := recvCmd.Bool("rename", false, "Rename downloaded target if it exists")
+	renameShortFlag := recvCmd.Bool("r", false, "Rename downloaded target (shortcut)")
 	passwordFlag := recvCmd.String("password", "", "Decryption password if protected")
 	mkdirFlag := recvCmd.Bool("mkdir", false, "Create destination directory if it doesn't exist")
-	mkdirShortFlag := recvCmd.Bool("p", false, "Create destination directory if it doesn't exist (shortcut)")
+	mkdirShortFlag := recvCmd.Bool("p", false, "Create destination directory (shortcut)")
 
 	err := recvCmd.Parse(args)
 	if err != nil {
@@ -310,7 +487,7 @@ func handleReceive(args []string) {
 	}
 
 	if recvCmd.NArg() < 1 {
-		fmt.Println("Error: Share link or share ID is required. Usage: uplink receive <share-link-or-id> [destination-path]")
+		fmt.Println("Error: Share link or ID is required. Usage: uplink receive <share-link> [dest]")
 		os.Exit(1)
 	}
 
@@ -320,7 +497,6 @@ func handleReceive(args []string) {
 		destPath = recvCmd.Arg(1)
 	}
 
-	// Parse Share ID and Server URL from link
 	shareId := shareInput
 	serverUrl := "http://localhost:3000"
 
@@ -334,7 +510,6 @@ func handleReceive(args []string) {
 			}
 		}
 	} else if strings.Contains(shareInput, "/") {
-		// e.g. uplink-delta.dev/4KJ8Pm9k2d8a_1hD9w0qzA
 		parts := strings.Split(shareInput, "/")
 		shareId = parts[len(parts)-1]
 		host := strings.Join(parts[:len(parts)-1], "/")
@@ -374,15 +549,20 @@ func handleReceive(args []string) {
 		os.Exit(1)
 	}
 
+	isArchive := strings.HasSuffix(meta.Filename, ".tar.gz")
 	cleanFilename := cleanPrintName(meta.Filename)
-	fmt.Printf("File details found:\n  Name: %s\n  Size: %d bytes\n", cleanFilename, meta.Size)
+	
+	if isArchive {
+		originalDirName := cleanFilename[:len(cleanFilename)-len(".tar.gz")]
+		fmt.Printf("Directory details found:\n  Name: %s\n  Archive Size: %d bytes\n", originalDirName, meta.Size)
+	} else {
+		fmt.Printf("File details found:\n  Name: %s\n  Size: %d bytes\n", cleanFilename, meta.Size)
+	}
 
-	// 2. Password Prompter if active
+	// 2. Password prompter
 	passwordToUse := *passwordFlag
 	if meta.PasswordRequired && passwordToUse == "" {
-		fmt.Print("File is password-protected. Enter password: ")
-		// Fallback clean read (note: doesn't hide text in basic read,
-		// but avoids complex dependencies for now)
+		fmt.Print("This share is password-protected. Enter password: ")
 		reader := bufio.NewReader(os.Stdin)
 		pwd, err := reader.ReadString('\n')
 		if err != nil {
@@ -435,14 +615,26 @@ func handleReceive(args []string) {
 	// Determine output path
 	sanitizedName := sanitizeFilename(meta.Filename)
 	outputFilepath := sanitizedName
+	var finalExtractDir string
+
+	if isArchive {
+		// Target folder name without .tar.gz
+		originalDirName := sanitizedName[:len(sanitizedName)-len(".tar.gz")]
+		outputFilepath = originalDirName
+		finalExtractDir = originalDirName
+	}
 
 	if destPath != "" {
-		// Clean and resolve path
 		destFileInfo, statErr := os.Stat(destPath)
 		if statErr == nil && destFileInfo.IsDir() {
-			outputFilepath = filepath.Join(destPath, sanitizedName)
+			if isArchive {
+				originalDirName := sanitizedName[:len(sanitizedName)-len(".tar.gz")]
+				finalExtractDir = filepath.Join(destPath, originalDirName)
+				outputFilepath = finalExtractDir
+			} else {
+				outputFilepath = filepath.Join(destPath, sanitizedName)
+			}
 		} else {
-			// Check if parent directory exists
 			parentDir := filepath.Dir(destPath)
 			if _, pErr := os.Stat(parentDir); os.IsNotExist(pErr) {
 				if *mkdirFlag || *mkdirShortFlag {
@@ -457,34 +649,39 @@ func handleReceive(args []string) {
 				}
 			}
 			outputFilepath = destPath
+			finalExtractDir = destPath
 		}
 	}
 
-	// Traversal safety: double check path is resolved cleanly
 	absOut, err := filepath.Abs(outputFilepath)
 	if err != nil {
 		fmt.Printf("Error resolving output path: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Check if target file exists
+	// Overwrite/Rename checks
 	if _, err = os.Stat(absOut); err == nil {
 		forceOverwrite := *forceFlag || *forceShortFlag
 		renameFile := *renameFlag || *renameShortFlag
 
 		if !forceOverwrite && !renameFile {
-			fmt.Printf("Error: Destination file '%s' already exists. Use --force (-f) to overwrite or --rename (-r) to save with suffix.\n", absOut)
+			fmt.Printf("Error: Target '%s' already exists. Use --force (-f) to overwrite or --rename (-r) to save with suffix.\n", absOut)
 			os.Exit(1)
 		}
 
 		if renameFile && !forceOverwrite {
-			// Find unique name
 			dir := filepath.Dir(absOut)
-			ext := filepath.Ext(absOut)
-			baseWithoutExt := sanitizedName[:len(sanitizedName)-len(ext)]
+			base := filepath.Base(absOut)
 			suffix := 1
 			for {
-				newName := fmt.Sprintf("%s (%d)%s", baseWithoutExt, suffix, ext)
+				var newName string
+				if isArchive {
+					newName = fmt.Sprintf("%s (%d)", base, suffix)
+				} else {
+					ext := filepath.Ext(base)
+					baseWithoutExt := base[:len(base)-len(ext)]
+					newName = fmt.Sprintf("%s (%d)%s", baseWithoutExt, suffix, ext)
+				}
 				outputFilepath = filepath.Join(dir, newName)
 				absOut, _ = filepath.Abs(outputFilepath)
 				if _, err = os.Stat(absOut); os.IsNotExist(err) {
@@ -492,11 +689,20 @@ func handleReceive(args []string) {
 				}
 				suffix++
 			}
+			if isArchive {
+				finalExtractDir = absOut
+			}
 		}
 	}
 
 	// 4. Download file
-	fmt.Printf("Downloading to '%s'...\n", absOut)
+	tempTarFile := absOut
+	if isArchive {
+		// Download directory archive as a temp tarball file
+		tempTarFile = absOut + ".download.tar.gz"
+	}
+
+	fmt.Printf("Downloading to '%s'...\n", tempTarFile)
 	downloadResp, err := http.Get(authData.DownloadUrl)
 	if err != nil {
 		fmt.Printf("Error downloading file: %v\n", err)
@@ -510,8 +716,7 @@ func handleReceive(args []string) {
 		os.Exit(1)
 	}
 
-	// Ensure output file is writable
-	outFd, err := os.OpenFile(absOut, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	outFd, err := os.OpenFile(tempTarFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		if os.IsPermission(err) {
 			fmt.Println("Error: Permission denied writing to destination.")
@@ -520,21 +725,19 @@ func handleReceive(args []string) {
 		}
 		os.Exit(1)
 	}
-	defer outFd.Close()
 
-	// Download progress reader
 	progDownload := &ProgressReader{
 		reader: downloadResp.Body,
 		total:  meta.Size,
 	}
 
-	// Compute checksum on the fly during download to verify integrity
 	downloadHasher := sha256.New()
 	multiWriter := io.MultiWriter(outFd, downloadHasher)
 
 	_, err = io.Copy(multiWriter, progDownload)
+	outFd.Close() // Close immediately
 	if err != nil {
-		// Check for disk full
+		os.Remove(tempTarFile)
 		if errors.Is(err, io.ErrShortWrite) {
 			fmt.Println("\nError: Write failed. Disk space may be exhausted.")
 		} else {
@@ -546,15 +749,35 @@ func handleReceive(args []string) {
 	computedHex := hex.EncodeToString(downloadHasher.Sum(nil))
 	fmt.Println("\nDownload completed.")
 
-	// Verify SHA-256 matches
 	if computedHex != meta.HashValue {
 		fmt.Println("Error: File integrity check failed! Computed checksum does not match expected hash.")
-		// Delete corrupted file
-		os.Remove(absOut)
+		os.Remove(tempTarFile)
 		os.Exit(1)
 	}
 
 	fmt.Println("File integrity verified successfully.")
+
+	// Unpack directory if archive
+	if isArchive {
+		fmt.Printf("Extracting folder contents to '%s'...\n", finalExtractDir)
+		
+		tarReader, err := os.Open(tempTarFile)
+		if err != nil {
+			fmt.Printf("Error opening download archive: %v\n", err)
+			os.Remove(tempTarFile)
+			os.Exit(1)
+		}
+
+		err = tarball.Unpack(tarReader, finalExtractDir)
+		tarReader.Close()
+		os.Remove(tempTarFile) // Clean up temporary download file
+
+		if err != nil {
+			fmt.Printf("Extraction failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Extraction completed successfully.")
+	}
 }
 
 // Custom ProgressReader to show progress in terminal

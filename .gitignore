@@ -39,3 +39,7 @@ Implementation_plan.txt
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local development storage mock
+/uploads_dev
+

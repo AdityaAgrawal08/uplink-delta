@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { crc64nvmeBase64 } from "@/lib/crc64";
 
 export async function PUT(req: NextRequest) {
   try {
@@ -8,6 +9,8 @@ export async function PUT(req: NextRequest) {
     const key = searchParams.get("key");
     const sha256 = searchParams.get("sha256") || "";
     const mimeType = searchParams.get("mimeType") || "";
+    const uploadId = searchParams.get("uploadId");
+    const partNumber = searchParams.get("partNumber");
 
     if (!key) {
       return NextResponse.json({ error: "Missing key" }, { status: 400 });
@@ -16,24 +19,42 @@ export async function PUT(req: NextRequest) {
     const arrayBuffer = await req.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const localPath = path.join(process.cwd(), "uploads_dev", key);
-    const dir = path.dirname(localPath);
+    const headers = new Headers();
+    let localPath = "";
 
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    if (uploadId && partNumber) {
+      // Multipart upload: Save part file
+      localPath = path.join(process.cwd(), "uploads_dev", `${key}.part_${partNumber}`);
+      const dir = path.dirname(localPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(localPath, buffer);
+
+      // Compute and return part-level CRC64NVME and ETag
+      const checksum = crc64nvmeBase64(buffer);
+      headers.set("x-amz-checksum-crc64nvme", checksum);
+      headers.set("ETag", `"${uploadId}-${partNumber}"`);
+    } else {
+      // Single-part upload
+      localPath = path.join(process.cwd(), "uploads_dev", key);
+      const dir = path.dirname(localPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(localPath, buffer);
+      
+      // Save metadata
+      fs.writeFileSync(
+        localPath + ".meta",
+        JSON.stringify({ sha256, mimeType, size: buffer.length })
+      );
     }
 
-    fs.writeFileSync(localPath, buffer);
-    
-    // Save metadata
-    fs.writeFileSync(
-      localPath + ".meta",
-      JSON.stringify({ sha256, mimeType, size: buffer.length })
-    );
-
-    return new Response(null, { status: 200 });
-  } catch (error: any) {
+    return new Response(null, { status: 200, headers });
+  } catch (error: unknown) {
     console.error("Local mock R2 upload failed:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const errMsg = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 }

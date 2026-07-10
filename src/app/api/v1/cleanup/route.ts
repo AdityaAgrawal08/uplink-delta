@@ -1,12 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getDb } from "@/lib/mongodb";
 import { deleteObject } from "@/lib/r2";
 
-export async function POST(req: NextRequest) {
+export async function POST() {
   return performCleanup();
 }
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   return performCleanup();
 }
 
@@ -114,8 +114,9 @@ async function performCleanup() {
       actions: results,
       uploadSessionsCleaned: uploadSessionsCleanupResult.deletedCount,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Cleanup job error:", error);
-    return NextResponse.json({ error: error?.message || "Internal Server Error" }, { status: 500 });
+    const errMsg = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/mongodb";
-import { checkObjectExists } from "@/lib/r2";
+import { checkObjectExists, completeMultipartUpload } from "@/lib/r2";
 import { anonymizeIp } from "@/lib/crypto";
 
 export async function POST(
@@ -9,6 +9,8 @@ export async function POST(
 ) {
   try {
     const { id } = await props.params;
+    const body = await req.json().catch(() => ({}));
+    const { parts } = body;
 
     const db = await getDb();
 
@@ -47,7 +49,6 @@ export async function POST(
 
     // Verify session expiration
     if (new Date(uploadSession.uploadExpiresAt) < now) {
-      // Transition statuses to EXPIRED
       await db
         .collection("shares")
         .updateOne({ shareId: id }, { $set: { status: "EXPIRED" } });
@@ -57,58 +58,96 @@ export async function POST(
       return NextResponse.json({ error: "Upload session has expired" }, { status: 410 });
     }
 
-    // 3. R2 HEAD Metadata Verification
-    const objDetails = await checkObjectExists(share.objectKey);
-    if (!objDetails.exists) {
-      return NextResponse.json(
-        { error: "Uploaded file was not found in object storage" },
-        { status: 404 }
-      );
-    }
+    let finalCrc64 = null;
+    let finalEtag = null;
 
-    if (objDetails.size <= 0) {
-      return NextResponse.json(
-        { error: "Uploaded file cannot be empty (0 bytes)" },
-        { status: 400 }
-      );
-    }
-
-    // 4. Integrity Verification: Check SHA-256
-    // Note: S3 ChecksumSHA256 returns standard base64 of SHA-256 hash or hex depending on client,
-    // let's verify. S3 ChecksumSHA256 is base64 representation.
-    // The db contains hashValue as a hex string (length 64).
-    // Let's write a comparison that converts appropriately if needed, or matches hex.
-    const expectedHex = share.hashValue.toLowerCase();
-    
-    let verified = false;
-    if (objDetails.checksumSha256) {
-      // Decode base64 to hex if R2 returns it as base64
-      let r2Hex = objDetails.checksumSha256.toLowerCase();
-      if (!/^[a-f0-9]{64}$/.test(r2Hex)) {
-        try {
-          r2Hex = Buffer.from(objDetails.checksumSha256, "base64").toString("hex").toLowerCase();
-        } catch {}
+    // 3. Complete and Verify Upload (Multipart vs Single-part)
+    if (uploadSession.isMultipart) {
+      if (!parts || !Array.isArray(parts)) {
+        return NextResponse.json(
+          { error: "Parts list is required to complete multipart upload" },
+          { status: 400 }
+        );
       }
-      if (r2Hex === expectedHex) {
-        verified = true;
+
+      // Assemble chunks in R2/S3 or mock storage
+      const completionResult = await completeMultipartUpload(
+        share.objectKey,
+        uploadSession.uploadId,
+        parts
+      );
+
+      if (completionResult.error) {
+        return NextResponse.json(
+          { error: `Failed to complete multipart assembly: ${completionResult.error}` },
+          { status: 400 }
+        );
+      }
+
+      finalCrc64 = completionResult.checksumCrc64nvme;
+      finalEtag = completionResult.etag;
+
+      // Verify CRC64NVME integrity
+      // S3 CompleteMultipartUpload returns ChecksumCRC64NVME natively if initialized with it
+      if (finalCrc64 && share.checksumCrc64nvme) {
+        if (finalCrc64 !== share.checksumCrc64nvme) {
+          await db
+            .collection("upload_sessions")
+            .updateOne({ shareId: id }, { $set: { status: "VERIFY_FAILED" } });
+          return NextResponse.json(
+            { error: "Integrity check failed: multipart full-object CRC64NVME does not match client expectation" },
+            { status: 412 }
+          );
+        }
       }
     } else {
-      // In case ChecksumSHA256 is not populated or verified by R2 natively (e.g. mock mode)
-      // we check local file match
-      verified = true;
+      // Single-part HEAD check
+      const objDetails = await checkObjectExists(share.objectKey);
+      if (!objDetails.exists) {
+        return NextResponse.json(
+          { error: "Uploaded file was not found in object storage" },
+          { status: 404 }
+        );
+      }
+
+      if (objDetails.size <= 0) {
+        return NextResponse.json(
+          { error: "Uploaded file cannot be empty (0 bytes)" },
+          { status: 400 }
+        );
+      }
+
+      // Verify SHA-256 integrity
+      const expectedHex = share.hashValue.toLowerCase();
+      let verified = false;
+
+      if (objDetails.checksumSha256) {
+        let r2Hex = objDetails.checksumSha256.toLowerCase();
+        if (!/^[a-f0-9]{64}$/.test(r2Hex)) {
+          try {
+            r2Hex = Buffer.from(objDetails.checksumSha256, "base64").toString("hex").toLowerCase();
+          } catch {}
+        }
+        if (r2Hex === expectedHex) {
+          verified = true;
+        }
+      } else {
+        // Fallback for mock mode or unpopulated checksum header
+        verified = true;
+      }
+
+      if (!verified) {
+        await db
+          .collection("upload_sessions")
+          .updateOne({ shareId: id }, { $set: { status: "VERIFY_FAILED" } });
+        return NextResponse.json(
+          { error: "Integrity check failed: uploaded file SHA-256 does not match client expectation" },
+          { status: 412 }
+        );
+      }
     }
 
-    if (!verified) {
-      await db
-        .collection("upload_sessions")
-        .updateOne({ shareId: id }, { $set: { status: "VERIFY_FAILED" } });
-      return NextResponse.json(
-        { error: "Integrity check failed: uploaded file SHA-256 does not match client expectation" },
-        { status: 412 }
-      );
-    }
-
-    // 5. Update Statuses to ACTIVE / COMPLETED
+    // 4. Update Statuses to ACTIVE / COMPLETED
     const shareStatusBefore = share.status;
     const shareStatusAfter = "ACTIVE";
 
@@ -117,7 +156,9 @@ export async function POST(
       {
         $set: {
           status: shareStatusAfter,
-          observedMimeType: objDetails.contentType || share.mimeType,
+          etag: finalEtag || null,
+          // Store observed checksum if verified
+          checksumCrc64nvme: finalCrc64 || share.checksumCrc64nvme,
         },
       },
       { returnDocument: "after" }
@@ -131,8 +172,7 @@ export async function POST(
       .collection("upload_sessions")
       .updateOne({ shareId: id }, { $set: { status: "COMPLETED" } });
 
-    // 6. Structured Diagnostics Logging
-    // IP mask using HMAC-SHA256
+    // 5. Structured Diagnostics Logging
     const clientIp = req.headers.get("x-forwarded-for") || "127.0.0.1";
     const ipHash = anonymizeIp(clientIp);
     const userAgent = req.headers.get("user-agent") || "Unknown";
@@ -144,6 +184,7 @@ export async function POST(
       shareId: id,
       shareStatusBefore,
       shareStatusAfter,
+      isMultipart: !!uploadSession.isMultipart,
       latencyMs: Date.now() - now.getTime(),
       ipHash,
       userAgentParsed: {
@@ -161,8 +202,9 @@ export async function POST(
       filename: share.filename,
       size: share.size,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error in POST /api/v1/share/[id]/confirm:", error);
-    return NextResponse.json({ error: error?.message || "Internal Server Error" }, { status: 500 });
+    const errMsg = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 }

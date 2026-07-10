@@ -4,16 +4,16 @@ const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
 const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 export interface IRedisClient {
-  get(key: string): Promise<any>;
-  set(key: string, value: any, options?: { ex?: number; px?: number; nx?: boolean }): Promise<any>;
+  get(key: string): Promise<unknown>;
+  set(key: string, value: unknown, options?: { ex?: number; px?: number; nx?: boolean }): Promise<unknown>;
   incr(key: string): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
 }
 
 class MockRedis implements IRedisClient {
-  private store: Map<string, { value: any; expiry: number | null }> = new Map();
+  private store: Map<string, { value: unknown; expiry: number | null }> = new Map();
 
-  async get(key: string): Promise<any> {
+  async get(key: string): Promise<unknown> {
     const item = this.store.get(key);
     if (!item) return null;
     if (item.expiry && Date.now() > item.expiry) {
@@ -31,11 +31,11 @@ class MockRedis implements IRedisClient {
     return item.value;
   }
 
-  async set(key: string, value: any, options?: { ex?: number; px?: number; nx?: boolean }): Promise<any> {
+  async set(key: string, value: unknown, options?: { ex?: number; px?: number; nx?: boolean }): Promise<unknown> {
     if (options?.nx) {
       const existing = await this.get(key);
       if (existing !== null) {
-        return null; // Return null if key already exists on nx
+        return null;
       }
     }
 
@@ -46,7 +46,7 @@ class MockRedis implements IRedisClient {
       expiry = Date.now() + options.px;
     }
 
-    const valueToStore = typeof value === "object" ? JSON.stringify(value) : value;
+    const valueToStore = typeof value === "object" && value !== null ? JSON.stringify(value) : value;
     this.store.set(key, { value: valueToStore, expiry });
     return "OK";
   }
@@ -58,7 +58,7 @@ class MockRedis implements IRedisClient {
       if (item.expiry && Date.now() > item.expiry) {
         this.store.delete(key);
       } else {
-        val = parseInt(item.value, 10);
+        val = parseInt(item.value as string, 10);
         if (isNaN(val)) val = 0;
       }
     }
