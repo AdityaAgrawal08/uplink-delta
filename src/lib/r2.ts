@@ -14,17 +14,39 @@ const bucketName = process.env.R2_BUCKET_NAME;
 
 export let s3Client: S3Client | null = null;
 
-if (accessKeyId && secretAccessKey && endpoint) {
-  s3Client = new S3Client({
-    region: "auto",
-    endpoint: endpoint,
-    credentials: {
-      accessKeyId: accessKeyId,
-      secretAccessKey: secretAccessKey,
-    },
-  });
+const isPlaceholder = (val: string | undefined) => {
+  if (!val) return true;
+  return (
+    val.includes("<") ||
+    val.includes(">") ||
+    val.includes("_here") ||
+    val.includes("example")
+  );
+};
+
+if (
+  accessKeyId &&
+  secretAccessKey &&
+  endpoint &&
+  !isPlaceholder(accessKeyId) &&
+  !isPlaceholder(secretAccessKey) &&
+  !isPlaceholder(endpoint)
+) {
+  try {
+    s3Client = new S3Client({
+      region: "auto",
+      endpoint: endpoint,
+      credentials: {
+        accessKeyId: accessKeyId,
+        secretAccessKey: secretAccessKey,
+      },
+    });
+  } catch (err) {
+    console.error("Failed to initialize S3 client, falling back to mock mode:", err);
+    s3Client = null;
+  }
 } else {
-  console.log("Cloudflare R2 credentials missing. Running in local dev file mock mode.");
+  console.log("Cloudflare R2 credentials missing or contain placeholders. Running in local dev file mock mode.");
 }
 
 export function getBucketName() {
