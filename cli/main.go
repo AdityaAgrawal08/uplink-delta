@@ -135,12 +135,19 @@ func sanitizeFilename(name string) string {
 	return base
 }
 
+func getServerDefault() string {
+	if val := os.Getenv("UPLINK_SERVER"); val != "" {
+		return strings.TrimRight(val, "/")
+	}
+	return "http://localhost:3000"
+}
+
 func handleSend(args []string) {
 	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
 	passwordFlag := sendCmd.String("password", "", "Password to protect the share link")
 	expiryFlag := sendCmd.Int("expiry", 86400, "Expiration in seconds (max 24h/86400)")
 	limitFlag := sendCmd.Int("limit", 10, "Download limit count")
-	serverFlag := sendCmd.String("server", "http://localhost:3000", "Server base URL")
+	serverFlag := sendCmd.String("server", getServerDefault(), "Server base URL")
 
 	err := sendCmd.Parse(args)
 	if err != nil {
@@ -498,7 +505,7 @@ func handleReceive(args []string) {
 	}
 
 	shareId := shareInput
-	serverUrl := "http://localhost:3000"
+	serverUrl := getServerDefault()
 
 	if strings.Contains(shareInput, "/share/") {
 		u, err := url.Parse(shareInput)
