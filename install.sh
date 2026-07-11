@@ -1,0 +1,66 @@
+#!/bin/sh
+set -e
+
+# Repository configuration
+REPO="AdityaAgrawal08/uplink-delta"
+BINARY_NAME="uplink"
+
+# Detect OS
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "${OS}" in
+  linux*)   OS="linux" ;;
+  darwin*)  OS="darwin" ;;
+  *)        echo "Error: Unsupported OS: ${OS}" >&2; exit 1 ;;
+esac
+
+# Detect Architecture
+ARCH="$(uname -m)"
+case "${ARCH}" in
+  x86_64)  ARCH="amd64" ;;
+  arm64|aarch64) ARCH="arm64" ;;
+  *)       echo "Error: Unsupported architecture: ${ARCH}" >&2; exit 1 ;;
+esac
+
+# Fetch latest release version from GitHub API
+echo "Fetching latest release version for ${OS}-${ARCH}..."
+LATEST_RELEASE_URL="https://api.github.com/repos/${REPO}/releases/latest"
+TAG=$(curl -s "${LATEST_RELEASE_URL}" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+
+if [ -z "${TAG}" ]; then
+  # Fallback if rate limited or API offline
+  TAG="v1.0.0"
+  echo "Warning: Could not fetch latest tag from API. Falling back to default: ${TAG}"
+fi
+
+# Define download URL for pre-built asset
+# e.g., uplink-linux-amd64.tar.gz
+ASSET_NAME="${BINARY_NAME}-${OS}-${ARCH}.tar.gz"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET_NAME}"
+
+# Temporary directory for download
+TEMP_DIR=$(mktemp -d)
+CLEANUP() {
+  rm -rf "${TEMP_DIR}"
+}
+trap CLEANUP EXIT
+
+echo "Downloading ${DOWNLOAD_URL}..."
+curl -sSL -o "${TEMP_DIR}/${ASSET_NAME}" "${DOWNLOAD_URL}"
+
+# Extract and install
+echo "Extracting binary..."
+tar -xzf "${TEMP_DIR}/${ASSET_NAME}" -C "${TEMP_DIR}"
+
+INSTALL_DIR="/usr/local/bin"
+echo "Installing to ${INSTALL_DIR}/${BINARY_NAME}..."
+
+if [ -w "${INSTALL_DIR}" ]; then
+  mv "${TEMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+else
+  echo "Write permission denied for ${INSTALL_DIR}. Prompting for sudo..."
+  sudo mv "${TEMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+fi
+
+chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+echo "Successfully installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}."
+echo "You can now run '${BINARY_NAME}' from anywhere in your terminal."
