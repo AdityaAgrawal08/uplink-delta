@@ -272,10 +272,11 @@ export async function completeMultipartUpload(
         writeStream.write(chunk);
         fs.unlinkSync(partPath);
       }
-      writeStream.end();
-
-      // Small delay to ensure stream is closed fully
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise<void>((resolve, reject) => {
+        writeStream.on("finish", () => resolve());
+        writeStream.on("error", (err) => reject(err));
+        writeStream.end();
+      });
 
       const completedContent = fs.readFileSync(localPath);
       const checksum = crc64nvmeBase64(completedContent);
