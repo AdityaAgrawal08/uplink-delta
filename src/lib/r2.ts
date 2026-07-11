@@ -115,6 +115,7 @@ export async function getPresignedDownloadUrl(
 export interface ObjectDetails {
   size: number;
   checksumSha256?: string;
+  checksumCrc64nvme?: string;
   contentType?: string;
   exists: boolean;
   error?: string;
@@ -128,16 +129,19 @@ export async function checkObjectExists(objectKey: string): Promise<ObjectDetail
       const stats = fs.statSync(localPath);
       // Retrieve stored mock checksum if available
       let checksum = "";
+      let checksumCrc64nvme = "";
       try {
         const metaPath = localPath + ".meta";
         if (fs.existsSync(metaPath)) {
           const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
           checksum = meta.sha256;
+          checksumCrc64nvme = meta.checksumCrc64nvme || "";
         }
       } catch {}
       return {
         size: stats.size,
         checksumSha256: checksum || "mock_sha256_hash",
+        checksumCrc64nvme: checksumCrc64nvme || undefined,
         exists: true,
       };
     }
@@ -153,6 +157,7 @@ export async function checkObjectExists(objectKey: string): Promise<ObjectDetail
     return {
       size: response.ContentLength || 0,
       checksumSha256: response.ChecksumSHA256,
+      checksumCrc64nvme: response.ChecksumCRC64NVME,
       contentType: response.ContentType,
       exists: true,
     };

@@ -84,13 +84,22 @@ export async function POST(
         );
       }
 
-      finalCrc64 = completionResult.checksumCrc64nvme;
       finalEtag = completionResult.etag;
 
+      // Run R2-validated HEAD Check on completed object to retrieve x-amz-checksum-crc64nvme header
+      const objDetails = await checkObjectExists(share.objectKey);
+      if (!objDetails.exists) {
+        return NextResponse.json(
+          { error: "Uploaded file was not found in object storage after assembly" },
+          { status: 404 }
+        );
+      }
+
+      finalCrc64 = objDetails.checksumCrc64nvme || completionResult.checksumCrc64nvme;
+
       // Verify CRC64NVME integrity
-      // S3 CompleteMultipartUpload returns ChecksumCRC64NVME natively if initialized with it
-      if (finalCrc64 && share.checksumCrc64nvme) {
-        if (finalCrc64 !== share.checksumCrc64nvme) {
+      if (share.checksumCrc64nvme) {
+        if (finalCrc64 && finalCrc64 !== share.checksumCrc64nvme) {
           await db
             .collection("upload_sessions")
             .updateOne({ shareId: id }, { $set: { status: "VERIFY_FAILED" } });
