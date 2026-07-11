@@ -3,6 +3,7 @@ import { getDb } from "@/lib/mongodb";
 import { redis } from "@/lib/redis";
 import { getPresignedDownloadUrl } from "@/lib/r2";
 import { verifyPassword, anonymizeIp } from "@/lib/crypto";
+import { consumeClassBQuota } from "@/lib/quota";
 
 // Safe preview mime-types allowlist
 const SAFE_PREVIEW_TYPES = [
@@ -36,6 +37,23 @@ export async function POST(
       return NextResponse.json(
         { error: "Too many failed attempts. Locked out for 5 minutes." },
         { status: 429 }
+      );
+    }
+
+    // 2. Class B Operation Quota check (Milestone 5)
+    try {
+      const classBApproved = await consumeClassBQuota();
+      if (!classBApproved) {
+        return NextResponse.json(
+          { error: "Service is temporarily unavailable due to operations quota limit exhaustion." },
+          { status: 503 }
+        );
+      }
+    } catch (quotaErr) {
+      console.error("Fail-closed: Class B quota check error:", quotaErr);
+      return NextResponse.json(
+        { error: "Service is temporarily unavailable due to system quota validation failure." },
+        { status: 503 }
       );
     }
 

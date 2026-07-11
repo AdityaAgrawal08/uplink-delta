@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDb } from "@/lib/mongodb";
 import { deleteObject } from "@/lib/r2";
+import { recordDeleteQuota, releaseUploadQuota } from "@/lib/quota";
 
 export async function POST() {
   return performCleanup();
@@ -45,11 +46,31 @@ async function performCleanup() {
       $inc: { retryCount: 1 },
     };
 
-    const lockResult = await db.collection("shares").updateMany(lockQuery, lockUpdate);
+    // 1. Identify expired shares first to preserve their original status
+    const candidates = await db.collection("shares").find(lockQuery).toArray();
     
-    if (lockResult.matchedCount === 0) {
-      return NextResponse.json({ message: "No expired shares found for cleanup" });
+    if (candidates.length === 0) {
+      // 4. Also clean up old upload sessions metadata that are completed or expired
+      const uploadSessionsCleanupResult = await db.collection("upload_sessions").deleteMany({
+        $or: [
+          { status: "COMPLETED", createdAt: { $lt: new Date(Date.now() - 24 * 3600 * 1000) } }, // Keep logs for 24h
+          { status: { $in: ["PENDING", "UPLOADING", "VERIFY_FAILED", "EXPIRED"] }, uploadExpiresAt: { $lt: now } }
+        ]
+      });
+      return NextResponse.json({
+        message: "No expired shares found for cleanup",
+        uploadSessionsCleaned: uploadSessionsCleanupResult.deletedCount
+      });
     }
+
+    const candidateIds = candidates.map(c => c._id);
+    const lockResult = await db.collection("shares").updateMany(
+      { _id: { $in: candidateIds } },
+      lockUpdate
+    );
+
+    // Create a lookup map for candidates by shareId to retrieve their original status
+    const candidateMap = new Map(candidates.map(c => [c.shareId, c]));
 
     // 2. Fetch locked shares for this worker
     const lockedShares = await db
@@ -64,6 +85,9 @@ async function performCleanup() {
 
     // 3. Process deletions
     for (const share of lockedShares) {
+      const originalShare = candidateMap.get(share.shareId);
+      const originalStatus = originalShare ? originalShare.status : "ACTIVE";
+
       const deleteSuccess = await deleteObject(share.objectKey);
       
       if (deleteSuccess) {
@@ -78,6 +102,18 @@ async function performCleanup() {
             },
           }
         );
+
+        // Adjust quota system metrics based on original status
+        if (originalStatus === "CREATED") {
+          // If it was unconfirmed, release the reservation
+          const uploadSession = await db.collection("upload_sessions").findOne({ shareId: share.shareId });
+          const estimatedOps = uploadSession?.isMultipart ? uploadSession.partsCount + 2 : 1;
+          await releaseUploadQuota(share.size, estimatedOps);
+        } else {
+          // If it was committed, decrement active storage bytes and record delete op
+          await recordDeleteQuota(share.size);
+        }
+
         results.push({ shareId: share.shareId, status: "DELETED" });
       } else {
         // Deletion failed: Transition to DELETE_FAILED and release lock
@@ -93,12 +129,20 @@ async function performCleanup() {
             },
           }
         );
+
+        // If the unconfirmed upload expired and R2 deletion failed, we still release the reservation
+        // so storage is not leaked.
+        if (originalStatus === "CREATED") {
+          const uploadSession = await db.collection("upload_sessions").findOne({ shareId: share.shareId });
+          const estimatedOps = uploadSession?.isMultipart ? uploadSession.partsCount + 2 : 1;
+          await releaseUploadQuota(share.size, estimatedOps);
+        }
+
         results.push({ shareId: share.shareId, status: "DELETE_FAILED" });
       }
     }
 
     // 4. Also clean up old upload sessions metadata that are completed or expired
-    // upload_sessions status REMOVED transition
     const uploadSessionsCleanupResult = await db.collection("upload_sessions").deleteMany({
       $or: [
         { status: "COMPLETED", createdAt: { $lt: new Date(Date.now() - 24 * 3600 * 1000) } }, // Keep logs for 24h

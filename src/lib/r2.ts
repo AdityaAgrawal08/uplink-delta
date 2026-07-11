@@ -32,6 +32,7 @@ const isPlaceholder = (val: string | undefined) => {
 };
 
 if (
+  process.env.FORCE_MOCK_STORAGE !== "true" &&
   accessKeyId &&
   secretAccessKey &&
   endpoint &&

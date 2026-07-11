@@ -8,6 +8,7 @@ export interface IRedisClient {
   set(key: string, value: unknown, options?: { ex?: number; px?: number; nx?: boolean }): Promise<unknown>;
   incr(key: string): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
+  del(key: string): Promise<number>;
 }
 
 class MockRedis implements IRedisClient {
@@ -72,6 +73,11 @@ class MockRedis implements IRedisClient {
     if (!item) return 0;
     item.expiry = Date.now() + seconds * 1000;
     return 1;
+  }
+
+  async del(key: string): Promise<number> {
+    const deleted = this.store.delete(key);
+    return deleted ? 1 : 0;
   }
 }
 

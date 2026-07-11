@@ -2,11 +2,33 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/mongodb";
 import { checkObjectExists, completeMultipartUpload } from "@/lib/r2";
 import { anonymizeIp } from "@/lib/crypto";
+import { commitUploadQuota, releaseUploadQuota } from "@/lib/quota";
+
+interface ShareData {
+  shareId: string;
+  size: number;
+  status: string;
+  filename: string;
+  objectKey: string;
+  hashValue: string;
+  checksumCrc64nvme?: string | null;
+}
+
+interface UploadSessionData {
+  isMultipart: boolean;
+  partsCount: number;
+  uploadId: string;
+  uploadExpiresAt: Date;
+}
 
 export async function POST(
   req: NextRequest,
   props: { params: Promise<{ id: string }> }
 ) {
+  let quotaCommitted = false;
+  let share: ShareData | null = null;
+  let uploadSession: UploadSessionData | null = null;
+
   try {
     const { id } = await props.params;
     const body = await req.json().catch(() => ({}));
@@ -15,7 +37,7 @@ export async function POST(
     const db = await getDb();
 
     // 1. Fetch Share metadata
-    const share = await db.collection("shares").findOne({ shareId: id });
+    share = (await db.collection("shares").findOne({ shareId: id })) as unknown as ShareData;
     if (!share) {
       return NextResponse.json({ error: "Share session not found" }, { status: 404 });
     }
@@ -37,9 +59,9 @@ export async function POST(
     }
 
     // 2. Fetch Upload Session
-    const uploadSession = await db
+    uploadSession = (await db
       .collection("upload_sessions")
-      .findOne({ shareId: id });
+      .findOne({ shareId: id })) as unknown as UploadSessionData;
     
     if (!uploadSession) {
       return NextResponse.json({ error: "Upload session not found" }, { status: 404 });
@@ -55,6 +77,8 @@ export async function POST(
       await db
         .collection("upload_sessions")
         .updateOne({ shareId: id }, { $set: { status: "EXPIRED" } });
+      const estimatedOps = uploadSession.isMultipart ? uploadSession.partsCount + 2 : 1;
+      await releaseUploadQuota(share.size, estimatedOps);
       return NextResponse.json({ error: "Upload session has expired" }, { status: 410 });
     }
 
@@ -64,6 +88,8 @@ export async function POST(
     // 3. Complete and Verify Upload (Multipart vs Single-part)
     if (uploadSession.isMultipart) {
       if (!parts || !Array.isArray(parts)) {
+        const estimatedOps = uploadSession.partsCount + 2;
+        await releaseUploadQuota(share.size, estimatedOps);
         return NextResponse.json(
           { error: "Parts list is required to complete multipart upload" },
           { status: 400 }
@@ -78,6 +104,8 @@ export async function POST(
       );
 
       if (completionResult.error) {
+        const estimatedOps = uploadSession.partsCount + 2;
+        await releaseUploadQuota(share.size, estimatedOps);
         return NextResponse.json(
           { error: `Failed to complete multipart assembly: ${completionResult.error}` },
           { status: 400 }
@@ -89,6 +117,8 @@ export async function POST(
       // Run R2-validated HEAD Check on completed object to retrieve x-amz-checksum-crc64nvme header
       const objDetails = await checkObjectExists(share.objectKey);
       if (!objDetails.exists) {
+        const estimatedOps = uploadSession.partsCount + 2;
+        await releaseUploadQuota(share.size, estimatedOps);
         return NextResponse.json(
           { error: "Uploaded file was not found in object storage after assembly" },
           { status: 404 }
@@ -103,6 +133,8 @@ export async function POST(
           await db
             .collection("upload_sessions")
             .updateOne({ shareId: id }, { $set: { status: "VERIFY_FAILED" } });
+          const estimatedOps = uploadSession.partsCount + 2;
+          await releaseUploadQuota(share.size, estimatedOps);
           return NextResponse.json(
             { error: "Integrity check failed: multipart full-object CRC64NVME does not match client expectation" },
             { status: 412 }
@@ -113,6 +145,7 @@ export async function POST(
       // Single-part HEAD check
       const objDetails = await checkObjectExists(share.objectKey);
       if (!objDetails.exists) {
+        await releaseUploadQuota(share.size, 1);
         return NextResponse.json(
           { error: "Uploaded file was not found in object storage" },
           { status: 404 }
@@ -120,6 +153,7 @@ export async function POST(
       }
 
       if (objDetails.size <= 0) {
+        await releaseUploadQuota(share.size, 1);
         return NextResponse.json(
           { error: "Uploaded file cannot be empty (0 bytes)" },
           { status: 400 }
@@ -149,6 +183,7 @@ export async function POST(
         await db
           .collection("upload_sessions")
           .updateOne({ shareId: id }, { $set: { status: "VERIFY_FAILED" } });
+        await releaseUploadQuota(share.size, 1);
         return NextResponse.json(
           { error: "Integrity check failed: uploaded file SHA-256 does not match client expectation" },
           { status: 412 }
@@ -174,12 +209,18 @@ export async function POST(
     );
 
     if (!updateShareResult) {
+      const estimatedOps = uploadSession.isMultipart ? uploadSession.partsCount + 2 : 1;
+      await releaseUploadQuota(share.size, estimatedOps);
       return NextResponse.json({ error: "Conflict updating share status" }, { status: 409 });
     }
 
     await db
       .collection("upload_sessions")
       .updateOne({ shareId: id }, { $set: { status: "COMPLETED" } });
+
+    // Commit the upload quota atomically
+    await commitUploadQuota(share.size);
+    quotaCommitted = true;
 
     // 5. Structured Diagnostics Logging
     const clientIp = req.headers.get("x-forwarded-for") || "127.0.0.1";
@@ -213,6 +254,14 @@ export async function POST(
     });
   } catch (error: unknown) {
     console.error("Error in POST /api/v1/share/[id]/confirm:", error);
+    if (!quotaCommitted && share) {
+      try {
+        const estimatedOps = uploadSession?.isMultipart ? uploadSession.partsCount + 2 : 1;
+        await releaseUploadQuota(share.size, estimatedOps);
+      } catch (refundErr) {
+        console.error("Failed to refund quota on confirm crash:", refundErr);
+      }
+    }
     const errMsg = error instanceof Error ? error.message : "Internal Server Error";
     return NextResponse.json({ error: errMsg }, { status: 500 });
   }

@@ -7,21 +7,27 @@ import {
   sanitizeFilename,
   hashPassword,
 } from "@/lib/crypto";
+import { reserveUploadQuota, releaseUploadQuota } from "@/lib/quota";
 
 export async function POST(req: NextRequest) {
+  let size = 0;
+  let partsCount = 0;
+  let isMultipart = false;
+  let quotaReserved = false;
+
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
     const {
       filename,
-      size,
       mimeType,
       hashValue,
       password,
       expiresInSeconds,
       downloadLimit,
-      partsCount,
       checksumCrc64nvme,
     } = body;
+    size = Number(body.size) || 0;
+    partsCount = Number(body.partsCount) || 0;
 
     // 1. Basic Validations
     if (!filename || typeof filename !== "string") {
@@ -37,7 +43,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const isMultipart = partsCount !== undefined && Number(partsCount) > 1;
+    isMultipart = partsCount > 1;
 
     // Enforce limits: Max 500 MB for multipart directories, 200 MB for guest single-part files
     const MAX_SIZE = isMultipart ? 500 * 1024 * 1024 : 200 * 1024 * 1024;
@@ -92,7 +98,40 @@ export async function POST(req: NextRequest) {
 
     const db = await getDb();
 
-    // 3. Share ID and Key construction
+    // 3. Quota Enforcement check (Milestone 5)
+    // Estimate Class A operations:
+    // If multipart: partsCount + 2 (Initiate + UploadParts + Complete)
+    // If singlepart: 1 (PutObject)
+    const estimatedClassAOps = isMultipart ? Number(partsCount) + 2 : 1;
+
+    try {
+      const quotaApproved = await reserveUploadQuota(size, estimatedClassAOps);
+      if (!quotaApproved) {
+        if (redisIdempotencyKey) {
+          await redis.del(redisIdempotencyKey);
+        }
+        return NextResponse.json(
+          {
+            error: "Storage capacity has been reached. New uploads are temporarily unavailable. Please wait while older files are removed automatically to free space.",
+          },
+          { status: 503 }
+        );
+      }
+      quotaReserved = true;
+    } catch (quotaErr) {
+      console.error("Fail-closed: Quota check error:", quotaErr);
+      if (redisIdempotencyKey) {
+        await redis.del(redisIdempotencyKey);
+      }
+      return NextResponse.json(
+        {
+          error: "Uploads are temporarily unavailable due to system quota validation failure.",
+        },
+        { status: 503 }
+      );
+    }
+
+    // 4. Share ID and Key construction
     const shareId = generateShareId();
     const storageFilename = sanitizeFilename(filename);
     const date = new Date();
@@ -195,6 +234,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(responseData, { status: 201 });
   } catch (error: unknown) {
     console.error("Error in POST /api/v1/share/init:", error);
+    if (quotaReserved) {
+      try {
+        const estimatedClassAOps = isMultipart ? partsCount + 2 : 1;
+        await releaseUploadQuota(size, estimatedClassAOps);
+      } catch (refundErr) {
+        console.error("Failed to refund quota on init error:", refundErr);
+      }
+    }
     const errMsg = error instanceof Error ? error.message : "Internal Server Error";
     return NextResponse.json({ error: errMsg }, { status: 500 });
   }
