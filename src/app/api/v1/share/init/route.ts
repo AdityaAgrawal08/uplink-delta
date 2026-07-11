@@ -87,8 +87,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Initialize MongoDB index checks
-    await initIndexes();
+    // Initialize MongoDB index checks in the background (non-blocking)
+    initIndexes().catch(err => console.error("Background index initialization failed:", err));
 
     const db = await getDb();
 

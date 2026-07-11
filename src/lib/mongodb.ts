@@ -36,8 +36,11 @@ export async function getDb(): Promise<Db> {
   return connection.db();
 }
 
+let indexesInitialized = false;
+
 // Helper to initialize indexes
 export async function initIndexes() {
+  if (indexesInitialized) return;
   try {
     const db = await getDb();
     
@@ -50,6 +53,7 @@ export async function initIndexes() {
     // Integrity index for CAS
     await db.collection("shares").createIndex({ hashValue: 1 });
     
+    indexesInitialized = true;
     console.log("MongoDB Indexes initialized successfully.");
   } catch (error) {
     console.error("Failed to initialize MongoDB indexes:", error);
