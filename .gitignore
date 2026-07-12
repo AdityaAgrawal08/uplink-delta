@@ -43,3 +43,7 @@ next-env.d.ts
 # local development storage mock
 /uploads_dev
 
+# Go CLI binaries
+/cli/uplink
+/cli/build/
+

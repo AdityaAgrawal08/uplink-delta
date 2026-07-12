@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"strconv"
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
@@ -36,8 +37,8 @@ type InitRequest struct {
 	MimeType          string `json:"mimeType"`
 	HashValue         string `json:"hashValue"`
 	Password          string `json:"password,omitempty"`
-	ExpiresInSeconds  int    `json:"expiresInSeconds"`
-	DownloadLimit     int    `json:"downloadLimit"`
+	ExpiresInSeconds  int    `json:"expiresInSeconds,omitempty"`
+	DownloadLimit     int    `json:"downloadLimit,omitempty"`
 	PartsCount        int    `json:"partsCount,omitempty"`
 	ChecksumCrc64nvme string `json:"checksumCrc64nvme,omitempty"`
 }
@@ -142,16 +143,46 @@ func getServerDefault() string {
 	return "https://uplink-delta-xi.vercel.app/"
 }
 
+func parseDurationToSeconds(durationStr string) (int, error) {
+	if len(durationStr) < 2 {
+		return 0, fmt.Errorf("invalid duration format: must contain a number and a unit suffix (m, h, d)")
+	}
+	suffix := durationStr[len(durationStr)-1:]
+	numStr := durationStr[:len(durationStr)-1]
+	val, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid number format in duration: %s", numStr)
+	}
+	if val <= 0 {
+		return 0, fmt.Errorf("duration must be greater than zero")
+	}
+	switch suffix {
+	case "m":
+		return val * 60, nil
+	case "h":
+		return val * 3600, nil
+	case "d":
+		return val * 86400, nil
+	default:
+		return 0, fmt.Errorf("unknown duration suffix: %s (supported units: m, h, d)", suffix)
+	}
+}
+
 func handleSend(args []string) {
 	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
 	passwordFlag := sendCmd.String("password", "", "Password to protect the share link")
-	expiryFlag := sendCmd.Int("expiry", 86400, "Expiration in seconds (max 24h/86400)")
-	limitFlag := sendCmd.Int("limit", 10, "Download limit count")
+	expireFlag := sendCmd.String("expire", "5m", "Expiration duration (e.g. 5m, 30m, 2h, 1d)")
 	serverFlag := sendCmd.String("server", getServerDefault(), "Server base URL")
 
 	err := sendCmd.Parse(args)
 	if err != nil {
 		fmt.Println("Error parsing flags:", err)
+		os.Exit(1)
+	}
+
+	expirySeconds, err := parseDurationToSeconds(*expireFlag)
+	if err != nil {
+		fmt.Printf("Error parsing expire flag: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -294,8 +325,7 @@ func handleSend(args []string) {
 		MimeType:         "application/octet-stream",
 		HashValue:        hashHex,
 		Password:         *passwordFlag,
-		ExpiresInSeconds: *expiryFlag,
-		DownloadLimit:    *limitFlag,
+		ExpiresInSeconds: expirySeconds,
 	}
 
 	if isMultipart {
