@@ -12,8 +12,18 @@ clean:
 
 release:
 	mkdir -p cli/build
-	cd cli && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o build/uplink-linux-amd64 -ldflags="-s -w" main.go
-	cd cli && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/uplink-linux-arm64 -ldflags="-s -w" main.go
-	cd cli && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o build/uplink-windows-amd64.exe -ldflags="-s -w" main.go
-	cd cli && GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o build/uplink-darwin-amd64 -ldflags="-s -w" main.go
-	cd cli && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o build/uplink-darwin-arm64 -ldflags="-s -w" main.go
+	# Linux AMD64
+	cd cli && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o build/uplink -ldflags="-s -w" main.go
+	cd cli/build && tar -czf uplink-linux-amd64.tar.gz uplink && rm uplink
+	# Linux ARM64
+	cd cli && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/uplink -ldflags="-s -w" main.go
+	cd cli/build && tar -czf uplink-linux-arm64.tar.gz uplink && rm uplink
+	# Windows AMD64
+	cd cli && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o build/uplink.exe -ldflags="-s -w" main.go
+	cd cli/build && tar -czf uplink-windows-amd64.tar.gz uplink.exe && rm uplink.exe
+	# Darwin AMD64
+	cd cli && GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o build/uplink -ldflags="-s -w" main.go
+	cd cli/build && tar -czf uplink-darwin-amd64.tar.gz uplink && rm uplink
+	# Darwin ARM64
+	cd cli && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o build/uplink -ldflags="-s -w" main.go
+	cd cli/build && tar -czf uplink-darwin-arm64.tar.gz uplink && rm uplink
