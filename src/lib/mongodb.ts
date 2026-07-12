@@ -64,6 +64,9 @@ export async function initIndexes() {
     // Integrity index for CAS
     await db.collection("shares").createIndex({ hashValue: 1 });
 
+    // Unique sparse index for short downloadCode
+    await db.collection("shares").createIndex({ downloadCode: 1 }, { unique: true, sparse: true });
+
     // Initialize quota tracking document if not present
     const quotaDoc = await db.collection<QuotaDocument>("quotas").findOne({ _id: "r2_quota" });
     if (!quotaDoc) {

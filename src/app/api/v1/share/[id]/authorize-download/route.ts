@@ -60,7 +60,7 @@ export async function POST(
     const db = await getDb();
 
     // 2. Fetch share document
-    const share = await db.collection("shares").findOne({ shareId: id });
+    const share = await db.collection("shares").findOne({ $or: [{ shareId: id }, { downloadCode: id }] });
     if (!share) {
       return NextResponse.json({ error: "Share not found" }, { status: 404 });
     }
@@ -70,7 +70,7 @@ export async function POST(
     // Check expiration
     if (new Date(share.expiresAt) < now || share.status === "EXPIRED") {
       if (share.status !== "EXPIRED" && share.status !== "DELETED" && share.status !== "PENDING_DELETE") {
-        await db.collection("shares").updateOne({ shareId: id }, { $set: { status: "EXPIRED" } });
+        await db.collection("shares").updateOne({ _id: share._id }, { $set: { status: "EXPIRED" } });
       }
       return NextResponse.json({ error: "This share link has expired" }, { status: 410 });
     }
@@ -105,7 +105,7 @@ export async function POST(
     // 4. Atomic Download Counter and Limit Check
     const result = await db.collection("shares").findOneAndUpdate(
       {
-        shareId: id,
+        shareId: share.shareId,
         status: "ACTIVE",
         $expr: { $lt: ["$downloadsCount", "$downloadLimit"] },
       },
@@ -123,9 +123,9 @@ export async function POST(
 
     if (!result) {
       // Limit exceeded or transition conflict. Check state.
-      const refreshedShare = await db.collection("shares").findOne({ shareId: id });
+      const refreshedShare = await db.collection("shares").findOne({ shareId: share.shareId });
       if (refreshedShare && refreshedShare.downloadsCount >= refreshedShare.downloadLimit) {
-        await db.collection("shares").updateOne({ shareId: id }, { $set: { status: "EXPIRED" } });
+        await db.collection("shares").updateOne({ _id: share._id }, { $set: { status: "EXPIRED" } });
         return NextResponse.json({ error: "Download limit exceeded for this file" }, { status: 410 });
       }
       return NextResponse.json({ error: "Download authorization failed" }, { status: 400 });

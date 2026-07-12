@@ -37,7 +37,7 @@ export async function POST(
     const db = await getDb();
 
     // 1. Fetch Share metadata
-    share = (await db.collection("shares").findOne({ shareId: id })) as unknown as ShareData;
+    share = (await db.collection("shares").findOne({ $or: [{ shareId: id }, { downloadCode: id }] })) as unknown as ShareData;
     if (!share) {
       return NextResponse.json({ error: "Share session not found" }, { status: 404 });
     }
@@ -61,7 +61,7 @@ export async function POST(
     // 2. Fetch Upload Session
     uploadSession = (await db
       .collection("upload_sessions")
-      .findOne({ shareId: id })) as unknown as UploadSessionData;
+      .findOne({ shareId: share.shareId })) as unknown as UploadSessionData;
     
     if (!uploadSession) {
       return NextResponse.json({ error: "Upload session not found" }, { status: 404 });
@@ -73,10 +73,10 @@ export async function POST(
     if (new Date(uploadSession.uploadExpiresAt) < now) {
       await db
         .collection("shares")
-        .updateOne({ shareId: id }, { $set: { status: "EXPIRED" } });
+        .updateOne({ _id: share._id }, { $set: { status: "EXPIRED" } });
       await db
         .collection("upload_sessions")
-        .updateOne({ shareId: id }, { $set: { status: "EXPIRED" } });
+        .updateOne({ shareId: share.shareId }, { $set: { status: "EXPIRED" } });
       const estimatedOps = uploadSession.isMultipart ? uploadSession.partsCount + 2 : 1;
       await releaseUploadQuota(share.size, estimatedOps);
       return NextResponse.json({ error: "Upload session has expired" }, { status: 410 });
@@ -196,7 +196,7 @@ export async function POST(
     const shareStatusAfter = "ACTIVE";
 
     const updateShareResult = await db.collection("shares").findOneAndUpdate(
-      { shareId: id, status: "CREATED" },
+      { shareId: share.shareId, status: "CREATED" },
       {
         $set: {
           status: shareStatusAfter,
@@ -216,7 +216,7 @@ export async function POST(
 
     await db
       .collection("upload_sessions")
-      .updateOne({ shareId: id }, { $set: { status: "COMPLETED" } });
+      .updateOne({ shareId: share.shareId }, { $set: { status: "COMPLETED" } });
 
     // Commit the upload quota atomically
     await commitUploadQuota(share.size);
@@ -247,7 +247,8 @@ export async function POST(
 
     return NextResponse.json({
       message: "Upload confirmed successfully",
-      shareId: id,
+      shareId: share.shareId,
+      downloadCode: share.downloadCode || null,
       status: shareStatusAfter,
       filename: share.filename,
       size: share.size,

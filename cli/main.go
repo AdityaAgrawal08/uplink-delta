@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"uplink-cli/pkg/crc64"
 	"uplink-cli/pkg/tarball"
 )
@@ -104,21 +105,112 @@ func main() {
 		handleSend(os.Args[2:])
 	case "receive":
 		handleReceive(os.Args[2:])
-	default:
-		fmt.Printf("Unknown command: %s\n", subcommand)
+	case "list":
+		handleList(os.Args[2:])
+	case "login":
+		handleLogin(os.Args[2:])
+	case "logout":
+		handleLogout(os.Args[2:])
+	case "status":
+		handleStatus(os.Args[2:])
+	case "help", "--help", "-h":
 		printUsage()
+	default:
+		if strings.HasPrefix(subcommand, "-") {
+			fmt.Printf("✗ Error: Unknown option \"%s\"\n\n", subcommand)
+		} else {
+			fmt.Printf("✗ Error: Unknown command \"%s\"\n\n", subcommand)
+		}
+		fmt.Println("Run:\n  uplink --help\n\nto see all available commands.")
 		os.Exit(1)
 	}
 }
 
 func printUsage() {
-	fmt.Println("R2-Uplink CLI Client (v7.1)")
-	fmt.Println("Usage:")
-	fmt.Println("  uplink send <filepath-or-directory> [flags]")
-	fmt.Println("  uplink receive <share-link-or-id> [destination-path] [flags]")
-	fmt.Println("\nCommands:")
-	fmt.Println("  send      Uploads a file or directory to the platform")
-	fmt.Println("  receive   Downloads a file or directory from the platform")
+	fmt.Println("R2-Uplink CLI Client (v7.2)")
+	fmt.Println("Usage: uplink <command> [arguments] [flags]\n")
+	fmt.Println("Commands:")
+	
+	fmt.Println("  send        Upload a file or directory")
+	fmt.Println("              uplink send report.pdf\n")
+	
+	fmt.Println("  receive     Download a file or directory")
+	fmt.Println("              uplink receive 4827165038\n")
+	
+	fmt.Println("  list        Show active uploads")
+	fmt.Println("              uplink list\n")
+	
+	fmt.Println("  login       Authenticate with the platform")
+	fmt.Println("              uplink login\n")
+	
+	fmt.Println("  logout      End current authenticated session")
+	fmt.Println("              uplink logout\n")
+	
+	fmt.Println("  status      Display account storage and quota status")
+	fmt.Println("              uplink status\n")
+	
+	fmt.Println("  help        Show available commands")
+	fmt.Println("              uplink --help")
+}
+
+func handleStatus(args []string) {
+	serverUrl := getServerDefault()
+	resp, err := http.Get(serverUrl + "/api/v1/admin/quota")
+	if err != nil {
+		fmt.Println("✗ Error connecting to server to fetch status.")
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		fmt.Println("✗ Error: Status endpoint returned server error.")
+		os.Exit(1)
+	}
+
+	var data struct {
+		TotalUploads          int     `json:"totalUploads"`
+		StorageUsageBytes     float64 `json:"storageUsageBytes"`
+		StorageThresholdBytes float64 `json:"storageThresholdBytes"`
+		StorageRemainingBytes float64 `json:"storageRemainingBytes"`
+	}
+
+	err = json.NewDecoder(resp.Body).Decode(&data)
+	if err != nil {
+		fmt.Printf("✗ Error: Failed to parse status response: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("ℹ Uploads\n")
+	fmt.Printf("Total uploads:\n%d\n\n", data.TotalUploads)
+	fmt.Printf("Storage used:\n%s\n\n", formatBytes(int64(data.StorageUsageBytes)))
+	fmt.Printf("Remaining:\n%s\n", formatBytes(int64(data.StorageRemainingBytes)))
+}
+
+func handleList(args []string) {
+	fmt.Println("✗ Error: Authentication required.\n")
+	fmt.Println("Run:\n  uplink login\n\nbefore using this command.")
+	os.Exit(1)
+}
+
+func handleLogin(args []string) {
+	fmt.Println("ℹ  Authentication is not configured on this server. All commands run in public guest mode.")
+}
+
+func handleLogout(args []string) {
+	fmt.Println("ℹ  Logged out from guest session.")
+}
+
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 func cleanPrintName(name string) string {
@@ -187,11 +279,12 @@ func handleSend(args []string) {
 	}
 
 	if sendCmd.NArg() < 1 {
-		fmt.Println("Error: File or directory path is required. Usage: uplink send <path>")
+		fmt.Println("✗ Error: File or directory path is required.\n")
+		fmt.Println("Usage:\n  uplink send <path>")
 		os.Exit(1)
 	}
 
-	inputPath := sendCmd.Arg(0)
+	inputPath := strings.Trim(sendCmd.Arg(0), "\"'")
 	var filePath string
 	var isDirectory bool
 	var originalName string
@@ -200,9 +293,10 @@ func handleSend(args []string) {
 	fileInfo, err := os.Stat(inputPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Printf("Error: Path '%s' does not exist.\n", inputPath)
+			fmt.Println("✗ Error: File not found.\n")
+			fmt.Println("Check that the path exists and that you have permission to access it.")
 		} else {
-			fmt.Printf("Error accessing path: %v\n", err)
+			fmt.Printf("✗ Error: Accessing path failed: %v\n", err)
 		}
 		os.Exit(1)
 	}
@@ -373,10 +467,15 @@ func handleSend(args []string) {
 	var confirmReq ConfirmRequest
 
 	if isMultipart {
-		fmt.Println("Streaming chunks in multipart mode to storage (Pass 2/2)...")
 		confirmReq.Parts = make([]PartInfo, partsCount)
 		buffer := make([]byte, ChunkSize)
 		totalUploaded := int64(0)
+		printer := &ProgressPrinter{
+			title:      "Uploading...",
+			total:      fileInfo.Size(),
+			startTime:  time.Now(),
+			firstPrint: true,
+		}
 
 		for i := 1; i <= partsCount; i++ {
 			n, readErr := file.Read(buffer)
@@ -425,19 +524,23 @@ func handleSend(args []string) {
 				}
 
 				totalUploaded += int64(n)
-				percent := int((float64(totalUploaded) / float64(fileInfo.Size())) * 100)
-				fmt.Printf("\rProgress: %d%% (%d/%d bytes)", percent, totalUploaded, fileInfo.Size())
+				printer.Print(totalUploaded)
 			}
 			if readErr != nil && readErr != io.EOF {
 				fmt.Printf("\nError reading file: %v\n", readErr)
 				os.Exit(1)
 			}
 		}
-		fmt.Println()
 	} else {
+		printer := &ProgressPrinter{
+			title:      "Uploading...",
+			total:      fileInfo.Size(),
+			startTime:  time.Now(),
+			firstPrint: true,
+		}
 		progressReader := &ProgressReader{
-			reader: file,
-			total:  fileInfo.Size(),
+			reader:  file,
+			printer: printer,
 		}
 
 		putReq, err := http.NewRequest("PUT", initResp.UploadUrl, progressReader)
@@ -468,7 +571,6 @@ func handleSend(args []string) {
 	}
 
 	// 4. Confirm upload
-	fmt.Print("Confirming transfer integrity... ")
 	confirmUrl := fmt.Sprintf("%s/api/v1/share/%s/confirm", serverUrl, initResp.ShareId)
 
 	var confirmBody io.Reader = nil
@@ -496,10 +598,27 @@ func handleSend(args []string) {
 		fmt.Printf("Failed (status %d): %s\n", confirmResp.StatusCode, string(bodyBytes))
 		os.Exit(1)
 	}
-	fmt.Println("Confirmed.")
 
-	shareLink := fmt.Sprintf("%s/share/%s", serverUrl, initResp.ShareId)
-	fmt.Printf("\nShare link generated successfully:\n%s\n", cleanPrintName(shareLink))
+	var confirmData struct {
+		DownloadCode string `json:"downloadCode"`
+		ShareId      string `json:"shareId"`
+	}
+	_ = json.NewDecoder(confirmResp.Body).Decode(&confirmData)
+
+	if confirmData.DownloadCode != "" {
+		_ = clipboard.WriteAll(confirmData.DownloadCode)
+	}
+
+	shareLink := fmt.Sprintf("%s/share/%s", serverUrl, confirmData.ShareId)
+	
+	fmt.Printf("\n✓ Upload completed\n\n")
+	fmt.Printf("File:\n%s\n\n", originalName)
+	if confirmData.DownloadCode != "" {
+		fmt.Printf("Code:\n%s\n\n", confirmData.DownloadCode)
+	}
+	fmt.Printf("Link:\n%s\n\n", cleanPrintName(shareLink))
+	fmt.Printf("Expires:\n%s\n\n", *expireFlag)
+	fmt.Printf("Size:\n%s\n", formatBytes(fileInfo.Size()))
 }
 
 func handleReceive(args []string) {
@@ -519,7 +638,8 @@ func handleReceive(args []string) {
 	}
 
 	if recvCmd.NArg() < 1 {
-		fmt.Println("Error: Share link or ID is required. Usage: uplink receive <share-link> [dest]")
+		fmt.Println("✗ Error: Share link, ID, or download code is required.\n")
+		fmt.Println("Usage:\n  uplink receive <share-link-or-code> [dest]")
 		os.Exit(1)
 	}
 
@@ -532,7 +652,11 @@ func handleReceive(args []string) {
 	shareId := shareInput
 	serverUrl := getServerDefault()
 
-	if strings.Contains(shareInput, "/share/") {
+	isShortCode, _ := regexp.MatchString(`^\d{10}$`, shareInput)
+	if isShortCode {
+		shareId = shareInput
+		serverUrl = getServerDefault()
+	} else if strings.Contains(shareInput, "/share/") {
 		u, err := url.Parse(shareInput)
 		if err == nil {
 			serverUrl = fmt.Sprintf("%s://%s", u.Scheme, u.Host)
@@ -549,6 +673,9 @@ func handleReceive(args []string) {
 			host = "http://" + host
 		}
 		serverUrl = host
+	} else {
+		shareId = shareInput
+		serverUrl = getServerDefault()
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -557,16 +684,14 @@ func handleReceive(args []string) {
 	metaUrl := fmt.Sprintf("%s/api/v1/share/%s", serverUrl, shareId)
 	resp, err := client.Get(metaUrl)
 	if err != nil {
-		fmt.Printf("Error fetching metadata: %v\n", err)
+		fmt.Printf("✗ Error: Fetching metadata failed: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 404 {
-		fmt.Println("Error: Share link not found.")
-		os.Exit(1)
-	} else if resp.StatusCode == 410 {
-		fmt.Println("Error: Share link has expired.")
+	if resp.StatusCode == 404 || resp.StatusCode == 410 {
+		fmt.Println("✗ Error: Download code not found.\n")
+		fmt.Println("The file may have expired or the code is incorrect.")
 		os.Exit(1)
 	} else if resp.StatusCode != 200 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -584,12 +709,7 @@ func handleReceive(args []string) {
 	isArchive := strings.HasSuffix(meta.Filename, ".tar.gz")
 	cleanFilename := cleanPrintName(meta.Filename)
 
-	if isArchive {
-		originalDirName := cleanFilename[:len(cleanFilename)-len(".tar.gz")]
-		fmt.Printf("Directory details found:\n  Name: %s\n  Archive Size: %d bytes\n", originalDirName, meta.Size)
-	} else {
-		fmt.Printf("File details found:\n  Name: %s\n  Size: %d bytes\n", cleanFilename, meta.Size)
-	}
+	// Details parsed successfully
 
 	// 2. Password prompter
 	passwordToUse := *passwordFlag
@@ -605,7 +725,6 @@ func handleReceive(args []string) {
 	}
 
 	// 3. Authorize Download
-	fmt.Print("Authorizing download... ")
 	authReq := AuthorizeRequest{
 		Password: passwordToUse,
 		Preview:  false,
@@ -642,7 +761,7 @@ func handleReceive(args []string) {
 		fmt.Printf("Error parsing auth details: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("Authorized.")
+	// Authorized successfully
 
 	// Determine output path
 	sanitizedName := sanitizeFilename(meta.Filename)
@@ -734,33 +853,38 @@ func handleReceive(args []string) {
 		tempTarFile = absOut + ".download.tar.gz"
 	}
 
-	fmt.Printf("Downloading to '%s'...\n", tempTarFile)
 	downloadResp, err := http.Get(authData.DownloadUrl)
 	if err != nil {
-		fmt.Printf("Error downloading file: %v\n", err)
+		fmt.Printf("✗ Error: Downloading file failed: %v\n", err)
 		os.Exit(1)
 	}
 	defer downloadResp.Body.Close()
 
 	if downloadResp.StatusCode != 200 {
 		bodyBytes, _ := io.ReadAll(downloadResp.Body)
-		fmt.Printf("Download failed (status %d): %s\n", downloadResp.StatusCode, string(bodyBytes))
+		fmt.Printf("✗ Error: Download failed (status %d): %s\n", downloadResp.StatusCode, string(bodyBytes))
 		os.Exit(1)
 	}
 
 	outFd, err := os.OpenFile(tempTarFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		if os.IsPermission(err) {
-			fmt.Println("Error: Permission denied writing to destination.")
+			fmt.Println("✗ Error: Permission denied writing to destination.")
 		} else {
-			fmt.Printf("Error creating output file: %v\n", err)
+			fmt.Printf("✗ Error: Creating output file failed: %v\n", err)
 		}
 		os.Exit(1)
 	}
 
+	printer := &ProgressPrinter{
+		title:      "Downloading...",
+		total:      meta.Size,
+		startTime:  time.Now(),
+		firstPrint: true,
+	}
 	progDownload := &ProgressReader{
-		reader: downloadResp.Body,
-		total:  meta.Size,
+		reader:  downloadResp.Body,
+		printer: printer,
 	}
 
 	downloadHasher := sha256.New()
@@ -771,31 +895,26 @@ func handleReceive(args []string) {
 	if err != nil {
 		os.Remove(tempTarFile)
 		if errors.Is(err, io.ErrShortWrite) {
-			fmt.Println("\nError: Write failed. Disk space may be exhausted.")
+			fmt.Println("\n✗ Error: Write failed. Disk space may be exhausted.")
 		} else {
-			fmt.Printf("\nError during download: %v\n", err)
+			fmt.Printf("\n✗ Error: Download interrupted: %v\n", err)
 		}
 		os.Exit(1)
 	}
 
 	computedHex := hex.EncodeToString(downloadHasher.Sum(nil))
-	fmt.Println("\nDownload completed.")
 
 	if computedHex != meta.HashValue {
-		fmt.Println("Error: File integrity check failed! Computed checksum does not match expected hash.")
+		fmt.Println("\n✗ Error: File integrity check failed! Computed checksum does not match expected hash.")
 		os.Remove(tempTarFile)
 		os.Exit(1)
 	}
 
-	fmt.Println("File integrity verified successfully.")
-
 	// Unpack directory if archive
 	if isArchive {
-		fmt.Printf("Extracting folder contents to '%s'...\n", finalExtractDir)
-
 		tarReader, err := os.Open(tempTarFile)
 		if err != nil {
-			fmt.Printf("Error opening download archive: %v\n", err)
+			fmt.Printf("✗ Error: Opening download archive failed: %v\n", err)
 			os.Remove(tempTarFile)
 			os.Exit(1)
 		}
@@ -805,34 +924,96 @@ func handleReceive(args []string) {
 		os.Remove(tempTarFile) // Clean up temporary download file
 
 		if err != nil {
-			fmt.Printf("Extraction failed: %v\n", err)
+			fmt.Printf("✗ Error: Extraction failed: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("Extraction completed successfully.")
+		fmt.Printf("\n✓ Download completed\n\nFile:\n%s\n\nDestination:\n%s\n\nSize:\n%s\n", cleanFilename, finalExtractDir, formatBytes(meta.Size))
+	} else {
+		fmt.Printf("\n✓ Download completed\n\nFile:\n%s\n\nDestination:\n%s\n\nSize:\n%s\n", cleanFilename, absOut, formatBytes(meta.Size))
 	}
 }
 
-// Custom ProgressReader to show progress in terminal
+type ProgressPrinter struct {
+	title      string
+	total      int64
+	startTime  time.Time
+	lastPrint  time.Time
+	firstPrint bool
+	isFinished bool
+}
+
+func (pp *ProgressPrinter) Print(read int64) {
+	now := time.Now()
+	if !pp.isFinished && read < pp.total && now.Sub(pp.lastPrint) < 100*time.Millisecond {
+		return
+	}
+	pp.lastPrint = now
+
+	percent := float64(0)
+	if pp.total > 0 {
+		percent = float64(read) / float64(pp.total)
+	}
+	percentInt := int(percent * 100)
+
+	elapsed := time.Since(pp.startTime).Seconds()
+	speed := 0.0
+	if elapsed > 0 {
+		speed = float64(read) / elapsed
+	}
+
+	etaStr := "Calculating..."
+	if speed > 0 && pp.total > 0 {
+		remainingBytes := pp.total - read
+		etaSeconds := float64(remainingBytes) / speed
+		if etaSeconds <= 0 {
+			etaStr = "0 seconds"
+		} else if etaSeconds < 60 {
+			etaStr = fmt.Sprintf("%d seconds", int(etaSeconds))
+		} else if etaSeconds < 3600 {
+			etaStr = fmt.Sprintf("%d minutes", int(etaSeconds/60))
+		} else {
+			etaStr = fmt.Sprintf("%d hours", int(etaSeconds/3600))
+		}
+	}
+	if read >= pp.total {
+		etaStr = "0 seconds"
+		pp.isFinished = true
+	}
+
+	barWidth := 20
+	completed := int(percent * float64(barWidth))
+	if completed > barWidth {
+		completed = barWidth
+	}
+	barStr := strings.Repeat("█", completed) + strings.Repeat("░", barWidth-completed)
+
+	speedStr := fmt.Sprintf("%s/s", formatBytes(int64(speed)))
+	transferredStr := fmt.Sprintf("%s / %s", formatBytes(read), formatBytes(pp.total))
+
+	if !pp.firstPrint {
+		fmt.Print("\033[5A")
+	} else {
+		pp.firstPrint = false
+	}
+
+	fmt.Printf("\033[K%s\n", pp.title)
+	fmt.Printf("\033[K%s %d%%\n", barStr, percentInt)
+	fmt.Printf("\033[K%s\n", transferredStr)
+	fmt.Printf("\033[K%s\n", speedStr)
+	fmt.Printf("\033[KETA: %s\n", etaStr)
+}
+
 type ProgressReader struct {
-	reader io.Reader
-	total  int64
-	read   int64
-	lastP  int
+	reader  io.Reader
+	printer *ProgressPrinter
+	read    int64
 }
 
 func (pr *ProgressReader) Read(p []byte) (int, error) {
 	n, err := pr.reader.Read(p)
 	if n > 0 {
 		pr.read += int64(n)
-		if pr.total > 0 {
-			percent := int((float64(pr.read) / float64(pr.total)) * 100)
-			if percent/5 > pr.lastP/5 || percent == 100 { // print every 5%
-				pr.lastP = percent
-				fmt.Printf("\rProgress: %d%% (%d/%d bytes)", percent, pr.read, pr.total)
-			}
-		} else {
-			fmt.Printf("\rProgress: %d bytes uploaded", pr.read)
-		}
+		pr.printer.Print(pr.read)
 	}
 	return n, err
 }

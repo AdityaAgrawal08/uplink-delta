@@ -169,9 +169,36 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Generate a unique 10-digit numeric code
+    let downloadCode = "";
+    let isCodeUnique = false;
+    let codeAttempts = 0;
+    while (!isCodeUnique && codeAttempts < 10) {
+      downloadCode = "";
+      for (let i = 0; i < 10; i++) {
+        downloadCode += Math.floor(Math.random() * 10).toString();
+      }
+      const existingCode = await db.collection("shares").findOne({ downloadCode });
+      if (!existingCode) {
+        isCodeUnique = true;
+      }
+      codeAttempts++;
+    }
+
+    if (!isCodeUnique) {
+      if (redisIdempotencyKey) {
+        await redis.del(redisIdempotencyKey);
+      }
+      return NextResponse.json(
+        { error: "Unique download code generation failed due to collision limits" },
+        { status: 500 }
+      );
+    }
+
     // 5. Database Insert (Share & Upload Session)
     const shareDoc = {
       shareId,
+      downloadCode,
       filename,
       storageFilename,
       size,

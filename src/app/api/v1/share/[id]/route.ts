@@ -11,7 +11,7 @@ export async function GET(
     const db = await getDb();
 
     // Find the active share
-    const share = await db.collection("shares").findOne({ shareId: id });
+    const share = await db.collection("shares").findOne({ $or: [{ shareId: id }, { downloadCode: id }] });
     if (!share) {
       return NextResponse.json({ error: "Share not found" }, { status: 404 });
     }
@@ -19,7 +19,7 @@ export async function GET(
     const now = new Date();
     if (new Date(share.expiresAt) < now || share.status === "EXPIRED" || share.status === "DELETED") {
       if (share.status !== "EXPIRED" && share.status !== "DELETED" && share.status !== "PENDING_DELETE") {
-        await db.collection("shares").updateOne({ shareId: id }, { $set: { status: "EXPIRED" } });
+        await db.collection("shares").updateOne({ _id: share._id }, { $set: { status: "EXPIRED" } });
       }
       return NextResponse.json({ error: "This share link has expired" }, { status: 410 });
     }
@@ -34,6 +34,7 @@ export async function GET(
     // Return non-sensitive metadata only
     return NextResponse.json({
       shareId: share.shareId,
+      downloadCode: share.downloadCode || null,
       filename: share.filename,
       size: share.size,
       mimeType: share.mimeType,

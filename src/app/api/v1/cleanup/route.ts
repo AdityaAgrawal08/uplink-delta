@@ -100,6 +100,9 @@ async function performCleanup() {
               cleanupLockedUntil: null,
               cleanupWorkerId: null,
             },
+            $unset: {
+              downloadCode: "",
+            },
           }
         );
 
@@ -126,6 +129,9 @@ async function performCleanup() {
               cleanupWorkerId: null,
               lastErrorCode: "R2_DELETE_FAILED",
               lastErrorMessage: "Failed to delete file from R2 object storage",
+            },
+            $unset: {
+              downloadCode: "",
             },
           }
         );

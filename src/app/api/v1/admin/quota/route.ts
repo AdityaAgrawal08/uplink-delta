@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getDb } from "@/lib/mongodb";
 import {
   getQuotaState,
   MAX_STORAGE_LIMIT,
@@ -29,10 +30,14 @@ export async function GET(req: NextRequest) {
     const secondsUntilClassAReset = Math.max(0, Math.round((classAResetAt - now) / 1000));
     const secondsUntilClassBReset = Math.max(0, Math.round((classBResetAt - now) / 1000));
 
+    const db = await getDb();
+    const totalUploads = await db.collection("shares").countDocuments({ status: "ACTIVE" });
+
     const totalOccupied = state.storageBytes + state.reservedBytes;
     const uploadsEnabled = totalOccupied < MAX_STORAGE_LIMIT && state.classAOps < MAX_CLASS_A_LIMIT;
 
     return NextResponse.json({
+      totalUploads,
       storageUsageBytes: state.storageBytes,
       storageReservedBytes: state.reservedBytes,
       storageThresholdBytes: MAX_STORAGE_LIMIT,
