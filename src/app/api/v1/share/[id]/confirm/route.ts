@@ -12,6 +12,7 @@ interface ShareData {
   objectKey: string;
   hashValue: string;
   checksumCrc64nvme?: string | null;
+  downloadCode?: string | null;
 }
 
 interface UploadSessionData {
@@ -73,7 +74,7 @@ export async function POST(
     if (new Date(uploadSession.uploadExpiresAt) < now) {
       await db
         .collection("shares")
-        .updateOne({ _id: share._id }, { $set: { status: "EXPIRED" } });
+        .updateOne({ shareId: share.shareId }, { $set: { status: "EXPIRED" } });
       await db
         .collection("upload_sessions")
         .updateOne({ shareId: share.shareId }, { $set: { status: "EXPIRED" } });

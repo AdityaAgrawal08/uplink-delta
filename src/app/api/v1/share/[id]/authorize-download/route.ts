@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { getDb } from "@/lib/mongodb";
+import { performCleanup } from "../../../cleanup/route";
 import { redis } from "@/lib/redis";
 import { getPresignedDownloadUrl } from "@/lib/r2";
 import { verifyPassword, anonymizeIp } from "@/lib/crypto";
@@ -70,7 +71,7 @@ export async function POST(
     // Check expiration
     if (new Date(share.expiresAt) < now || share.status === "EXPIRED") {
       if (share.status !== "EXPIRED" && share.status !== "DELETED" && share.status !== "PENDING_DELETE") {
-        await db.collection("shares").updateOne({ _id: share._id }, { $set: { status: "EXPIRED" } });
+        await db.collection("shares").updateOne({ shareId: share.shareId }, { $set: { status: "EXPIRED" } });
       }
       return NextResponse.json({ error: "This share link has expired" }, { status: 410 });
     }
@@ -125,7 +126,7 @@ export async function POST(
       // Limit exceeded or transition conflict. Check state.
       const refreshedShare = await db.collection("shares").findOne({ shareId: share.shareId });
       if (refreshedShare && refreshedShare.downloadsCount >= refreshedShare.downloadLimit) {
-        await db.collection("shares").updateOne({ _id: share._id }, { $set: { status: "EXPIRED" } });
+        await db.collection("shares").updateOne({ shareId: share.shareId }, { $set: { status: "EXPIRED" } });
         return NextResponse.json({ error: "Download limit exceeded for this file" }, { status: 410 });
       }
       return NextResponse.json({ error: "Download authorization failed" }, { status: 400 });
@@ -162,6 +163,11 @@ export async function POST(
       error: null,
     };
     console.log(JSON.stringify(logEvent));
+
+    // Trigger background cleanup asynchronously to purge any expired uploads
+    after(async () => {
+      await performCleanup().catch(err => console.error("Background cleanup failed:", err));
+    });
 
     return NextResponse.json({
       downloadUrl,

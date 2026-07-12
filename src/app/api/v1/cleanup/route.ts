@@ -11,7 +11,7 @@ export async function GET() {
   return performCleanup();
 }
 
-async function performCleanup() {
+export async function performCleanup() {
   try {
     const db = await getDb();
     const now = new Date();

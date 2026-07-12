@@ -19,7 +19,7 @@ export async function GET(
     const now = new Date();
     if (new Date(share.expiresAt) < now || share.status === "EXPIRED" || share.status === "DELETED") {
       if (share.status !== "EXPIRED" && share.status !== "DELETED" && share.status !== "PENDING_DELETE") {
-        await db.collection("shares").updateOne({ _id: share._id }, { $set: { status: "EXPIRED" } });
+        await db.collection("shares").updateOne({ shareId: share.shareId }, { $set: { status: "EXPIRED" } });
       }
       return NextResponse.json({ error: "This share link has expired" }, { status: 410 });
     }

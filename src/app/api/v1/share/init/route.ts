@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { getDb, initIndexes } from "@/lib/mongodb";
+import { performCleanup } from "../../cleanup/route";
 import { redis } from "@/lib/redis";
 import { getPresignedUploadUrl, getPresignedMultipartUrls } from "@/lib/r2";
 import {
@@ -257,6 +258,11 @@ export async function POST(req: NextRequest) {
     if (redisIdempotencyKey) {
       await redis.set(redisIdempotencyKey, responseData, { ex: 86400 });
     }
+
+    // Trigger background cleanup asynchronously to purge any expired uploads
+    after(async () => {
+      await performCleanup().catch(err => console.error("Background cleanup failed:", err));
+    });
 
     return NextResponse.json(responseData, { status: 201 });
   } catch (error: unknown) {
