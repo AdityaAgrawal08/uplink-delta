@@ -81,19 +81,49 @@ class MockRedis implements IRedisClient {
   }
 }
 
-let redis: IRedisClient;
+class LazyRedisClient implements IRedisClient {
+  private client: IRedisClient | null = null;
 
-if (redisUrl && redisToken) {
-  redis = new Redis({
-    url: redisUrl,
-    token: redisToken,
-  }) as unknown as IRedisClient;
-} else {
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set in production");
+  private getClient(): IRedisClient {
+    if (this.client) return this.client;
+
+    const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+    if (redisUrl && redisToken) {
+      this.client = new Redis({
+        url: redisUrl,
+        token: redisToken,
+      }) as unknown as IRedisClient;
+    } else {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set in production");
+      }
+      console.log("Upstash Redis credentials missing. Using local in-memory MockRedis (dev only).");
+      this.client = new MockRedis();
+    }
+    return this.client;
   }
-  console.log("Upstash Redis credentials missing. Using local in-memory MockRedis (dev only).");
-  redis = new MockRedis();
+
+  async get(key: string): Promise<unknown> {
+    return this.getClient().get(key);
+  }
+
+  async set(key: string, value: unknown, options?: { ex?: number; px?: number; nx?: boolean }): Promise<unknown> {
+    return this.getClient().set(key, value, options);
+  }
+
+  async incr(key: string): Promise<number> {
+    return this.getClient().incr(key);
+  }
+
+  async expire(key: string, seconds: number): Promise<number> {
+    return this.getClient().expire(key, seconds);
+  }
+
+  async del(key: string): Promise<number> {
+    return this.getClient().del(key);
+  }
 }
 
-export { redis };
+export const redis = new LazyRedisClient();

@@ -62,20 +62,27 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 }
 
 let ipAnonymizationSecret: string;
-const envSecret = process.env.IP_ANONYMIZATION_SECRET;
-if (!envSecret) {
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("IP_ANONYMIZATION_SECRET environment variable is required in production");
+
+function getIpAnonymizationSecret(): string {
+  if (ipAnonymizationSecret) return ipAnonymizationSecret;
+
+  const envSecret = process.env.IP_ANONYMIZATION_SECRET;
+  if (!envSecret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("IP_ANONYMIZATION_SECRET environment variable is required in production");
+    }
+    // Development: generate ephemeral random secret
+    ipAnonymizationSecret = crypto.randomBytes(32).toString("hex");
+    console.warn("WARNING: IP_ANONYMIZATION_SECRET not set. Using ephemeral random secret (IPs will not be consistently anonymized across restarts).");
+  } else {
+    ipAnonymizationSecret = envSecret;
   }
-  // Development: generate ephemeral random secret
-  ipAnonymizationSecret = crypto.randomBytes(32).toString("hex");
-  console.warn("WARNING: IP_ANONYMIZATION_SECRET not set. Using ephemeral random secret (IPs will not be consistently anonymized across restarts).");
-} else {
-  ipAnonymizationSecret = envSecret;
+  return ipAnonymizationSecret;
 }
 
 export function anonymizeIp(ip: string): string {
-  return crypto.createHmac("sha256", ipAnonymizationSecret).update(ip).digest("hex");
+  const secret = getIpAnonymizationSecret();
+  return crypto.createHmac("sha256", secret).update(ip).digest("hex");
 }
 
 export function generateShareId(): string {
