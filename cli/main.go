@@ -105,14 +105,6 @@ func main() {
 		handleSend(os.Args[2:])
 	case "receive":
 		handleReceive(os.Args[2:])
-	case "list":
-		handleList(os.Args[2:])
-	case "login":
-		handleLogin(os.Args[2:])
-	case "logout":
-		handleLogout(os.Args[2:])
-	case "status":
-		handleStatus(os.Args[2:])
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -137,67 +129,8 @@ func printUsage() {
 	fmt.Println("  receive     Download a file or directory")
 	fmt.Println("              uplink receive 4827165038\n")
 	
-	fmt.Println("  list        Show active uploads")
-	fmt.Println("              uplink list\n")
-	
-	fmt.Println("  login       Authenticate with the platform")
-	fmt.Println("              uplink login\n")
-	
-	fmt.Println("  logout      End current authenticated session")
-	fmt.Println("              uplink logout\n")
-	
-	fmt.Println("  status      Display account storage and quota status")
-	fmt.Println("              uplink status\n")
-	
 	fmt.Println("  help        Show available commands")
 	fmt.Println("              uplink --help")
-}
-
-func handleStatus(args []string) {
-	serverUrl := getServerDefault()
-	resp, err := http.Get(serverUrl + "/api/v1/admin/quota")
-	if err != nil {
-		fmt.Println("✗ Error connecting to server to fetch status.")
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		fmt.Println("✗ Error: Status endpoint returned server error.")
-		os.Exit(1)
-	}
-
-	var data struct {
-		TotalUploads          int     `json:"totalUploads"`
-		StorageUsageBytes     float64 `json:"storageUsageBytes"`
-		StorageThresholdBytes float64 `json:"storageThresholdBytes"`
-		StorageRemainingBytes float64 `json:"storageRemainingBytes"`
-	}
-
-	err = json.NewDecoder(resp.Body).Decode(&data)
-	if err != nil {
-		fmt.Printf("✗ Error: Failed to parse status response: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("ℹ Uploads\n")
-	fmt.Printf("Total uploads:\n%d\n\n", data.TotalUploads)
-	fmt.Printf("Storage used:\n%s\n\n", formatBytes(int64(data.StorageUsageBytes)))
-	fmt.Printf("Remaining:\n%s\n", formatBytes(int64(data.StorageRemainingBytes)))
-}
-
-func handleList(args []string) {
-	fmt.Println("✗ Error: Authentication required.\n")
-	fmt.Println("Run:\n  uplink login\n\nbefore using this command.")
-	os.Exit(1)
-}
-
-func handleLogin(args []string) {
-	fmt.Println("ℹ  Authentication is not configured on this server. All commands run in public guest mode.")
-}
-
-func handleLogout(args []string) {
-	fmt.Println("ℹ  Logged out from guest session.")
 }
 
 func formatBytes(bytes int64) string {
