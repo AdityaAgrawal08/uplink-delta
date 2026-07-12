@@ -52,15 +52,34 @@ echo "Extracting binary..."
 tar -xzf "${TEMP_DIR}/${ASSET_NAME}" -C "${TEMP_DIR}"
 
 INSTALL_DIR="/usr/local/bin"
+if [ -n "${PREFIX}" ]; then
+  INSTALL_DIR="${PREFIX}/bin"
+fi
+
 echo "Installing to ${INSTALL_DIR}/${BINARY_NAME}..."
 
 if [ -w "${INSTALL_DIR}" ]; then
   mv "${TEMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 else
-  echo "Write permission denied for ${INSTALL_DIR}. Prompting for sudo..."
-  sudo mv "${TEMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+  if command -v sudo >/dev/null 2>&1; then
+    echo "Write permission denied for ${INSTALL_DIR}. Prompting for sudo..."
+    sudo mv "${TEMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+  else
+    LOCAL_BIN="${HOME}/.local/bin"
+    echo "Write permission denied for ${INSTALL_DIR} and sudo is not available."
+    echo "Attempting installation to ${LOCAL_BIN}..."
+    mkdir -p "${LOCAL_BIN}"
+    mv "${TEMP_DIR}/${BINARY_NAME}" "${LOCAL_BIN}/${BINARY_NAME}"
+    INSTALL_DIR="${LOCAL_BIN}"
+  fi
 fi
 
 chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
 echo "Successfully installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}."
-echo "You can now run '${BINARY_NAME}' from anywhere in your terminal."
+
+if [ "${INSTALL_DIR}" = "${HOME}/.local/bin" ]; then
+  echo "⚠️  Important: Make sure '${INSTALL_DIR}' is in your PATH environment variable."
+  echo "You can add it by running: echo 'export PATH=\"\$PATH:${INSTALL_DIR}\"' >> ~/.bashrc && source ~/.bashrc"
+else
+  echo "You can now run '${BINARY_NAME}' from anywhere in your terminal."
+fi
