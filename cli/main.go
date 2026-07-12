@@ -300,10 +300,7 @@ func handleSend(args []string) {
 		crcBase64 = base64.StdEncoding.EncodeToString(crcBytes)
 	}
 
-	fmt.Printf("Done.\nSHA-256: %s\n", hashHex)
-	if isMultipart {
-		fmt.Printf("CRC64NVME: %s (Multipart chunks: %d)\n", crcBase64, partsCount)
-	}
+	fmt.Println("Done.")
 
 	// Reset file descriptor pointer
 	_, err = file.Seek(0, 0)
@@ -436,9 +433,8 @@ func handleSend(args []string) {
 				os.Exit(1)
 			}
 		}
-		fmt.Println("\nAll parts uploaded successfully.")
+		fmt.Println()
 	} else {
-		fmt.Println("Streaming file in single-part mode to storage (Pass 2/2)...")
 		progressReader := &ProgressReader{
 			reader: file,
 			total:  fileInfo.Size(),
@@ -451,9 +447,8 @@ func handleSend(args []string) {
 		}
 
 		// SHA-256 header required for single-part
-		hashBase64 := base64.StdEncoding.EncodeToString(hashBytes)
 		putReq.Header.Set("Content-Type", "application/octet-stream")
-		putReq.Header.Set("x-amz-checksum-sha256", hashBase64)
+		// putReq.Header.Set("x-amz-checksum-sha256", hashBase64)
 		putReq.ContentLength = fileInfo.Size()
 
 		uploadClient := &http.Client{Timeout: 30 * time.Minute}
@@ -469,7 +464,7 @@ func handleSend(args []string) {
 			fmt.Printf("\nUpload failed (status %d): %s\n", putResp.StatusCode, string(bodyBytes))
 			os.Exit(1)
 		}
-		fmt.Println("\nUpload to storage completed.")
+		fmt.Println()
 	}
 
 	// 4. Confirm upload
