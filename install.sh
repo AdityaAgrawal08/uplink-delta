@@ -21,21 +21,10 @@ case "${ARCH}" in
   *)       echo "Error: Unsupported architecture: ${ARCH}" >&2; exit 1 ;;
 esac
 
-# Fetch latest release version from GitHub API
-echo "Fetching latest release version for ${OS}-${ARCH}..."
-LATEST_RELEASE_URL="https://api.github.com/repos/${REPO}/releases/latest"
-TAG=$(curl -s "${LATEST_RELEASE_URL}" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-
-if [ -z "${TAG}" ]; then
-  # Fallback if rate limited or API offline
-  TAG="v1.0.0"
-  echo "Warning: Could not fetch latest tag from API. Falling back to default: ${TAG}"
-fi
-
-# Define download URL for pre-built asset
+# Define download URL for pre-built asset using the GitHub latest release redirect
 # e.g., uplink-linux-amd64.tar.gz
 ASSET_NAME="${BINARY_NAME}-${OS}-${ARCH}.tar.gz"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET_NAME}"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${ASSET_NAME}"
 
 # Temporary directory for download
 TEMP_DIR=$(mktemp -d)
