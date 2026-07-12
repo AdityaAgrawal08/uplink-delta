@@ -13,10 +13,10 @@ clean:
 release:
 	mkdir -p cli/build
 	# Linux AMD64
-	cd cli && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o build/uplink -ldflags="-s -w" main.go
+	cd cli && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -buildmode=pie -o build/uplink -ldflags="-s -w" main.go
 	cd cli/build && tar -czf uplink-linux-amd64.tar.gz uplink && rm uplink
 	# Linux ARM64
-	cd cli && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o build/uplink -ldflags="-s -w" main.go
+	cd cli && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -buildmode=pie -o build/uplink -ldflags="-s -w" main.go
 	cd cli/build && tar -czf uplink-linux-arm64.tar.gz uplink && rm uplink
 	# Windows AMD64
 	cd cli && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o build/uplink.exe -ldflags="-s -w" main.go
