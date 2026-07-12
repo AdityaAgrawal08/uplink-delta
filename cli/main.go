@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
-	"uplink-cli/pkg/crc64"
-	"uplink-cli/pkg/tarball"
+	"github.com/AdityaAgrawal08/uplink-delta/cli/pkg/crc64"
+	"github.com/AdityaAgrawal08/uplink-delta/cli/pkg/tarball"
 )
 
 // ANSI stripping regex
@@ -166,6 +166,19 @@ func getServerDefault() string {
 		return strings.TrimRight(val, "/")
 	}
 	return "https://uplink-delta-xi.vercel.app/"
+}
+
+func sanitizeServerUrl(serverUrl string) string {
+	serverUrl = strings.TrimRight(serverUrl, "/")
+	if !strings.HasPrefix(serverUrl, "http://") && !strings.HasPrefix(serverUrl, "https://") {
+		serverUrl = "https://" + serverUrl
+	} else if strings.HasPrefix(serverUrl, "http://") {
+		if !strings.Contains(serverUrl, "localhost") && !strings.Contains(serverUrl, "127.0.0.1") {
+			fmt.Println("Warning: Upgrading insecure HTTP to HTTPS")
+			serverUrl = "https://" + strings.TrimPrefix(serverUrl, "http://")
+		}
+	}
+	return serverUrl
 }
 
 func parseDurationToSeconds(durationStr string) (int, error) {
@@ -363,7 +376,7 @@ func handleSend(args []string) {
 		os.Exit(1)
 	}
 
-	serverUrl := strings.TrimRight(*serverFlag, "/")
+	serverUrl := sanitizeServerUrl(*serverFlag)
 	initUrl := fmt.Sprintf("%s/api/v1/share/init", serverUrl)
 
 	req, err := http.NewRequest("POST", initUrl, bytes.NewBuffer(jsonBytes))
@@ -437,13 +450,14 @@ func handleSend(args []string) {
 					fmt.Printf("\nChunk %d upload network error: %v\n", i, err)
 					os.Exit(1)
 				}
-				defer putResp.Body.Close()
 
 				if putResp.StatusCode != 200 && putResp.StatusCode != 204 {
 					bodyBytes, _ := io.ReadAll(putResp.Body)
+					putResp.Body.Close()
 					fmt.Printf("\nChunk %d upload failed (status %d): %s\n", i, putResp.StatusCode, string(bodyBytes))
 					os.Exit(1)
 				}
+				putResp.Body.Close()
 
 				etag := putResp.Header.Get("ETag")
 				if etag == "" {
@@ -610,6 +624,8 @@ func handleReceive(args []string) {
 		shareId = shareInput
 		serverUrl = getServerDefault()
 	}
+
+	serverUrl = sanitizeServerUrl(serverUrl)
 
 	client := &http.Client{Timeout: 15 * time.Second}
 

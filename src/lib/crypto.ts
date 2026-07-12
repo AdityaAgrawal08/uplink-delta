@@ -61,9 +61,21 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
   }
 }
 
+let ipAnonymizationSecret: string;
+const envSecret = process.env.IP_ANONYMIZATION_SECRET;
+if (!envSecret) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("IP_ANONYMIZATION_SECRET environment variable is required in production");
+  }
+  // Development: generate ephemeral random secret
+  ipAnonymizationSecret = crypto.randomBytes(32).toString("hex");
+  console.warn("WARNING: IP_ANONYMIZATION_SECRET not set. Using ephemeral random secret (IPs will not be consistently anonymized across restarts).");
+} else {
+  ipAnonymizationSecret = envSecret;
+}
+
 export function anonymizeIp(ip: string): string {
-  const secret = process.env.IP_ANONYMIZATION_SECRET || "default_ip_anonymization_secret";
-  return crypto.createHmac("sha256", secret).update(ip).digest("hex");
+  return crypto.createHmac("sha256", ipAnonymizationSecret).update(ip).digest("hex");
 }
 
 export function generateShareId(): string {

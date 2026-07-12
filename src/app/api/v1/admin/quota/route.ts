@@ -6,19 +6,13 @@ import {
   MAX_CLASS_A_LIMIT,
   MAX_CLASS_B_LIMIT,
 } from "@/lib/quota";
+import { validateAdminAuth } from "@/lib/auth";
+import { apiError } from "@/lib/api-utils";
 
 export async function GET(req: NextRequest) {
   try {
-    // Optional admin secret validation
-    const adminSecret = process.env.ADMIN_SECRET;
-    if (adminSecret) {
-      const authHeader = req.headers.get("authorization");
-      const urlSecret = req.nextUrl.searchParams.get("secret");
-      const providedSecret = authHeader?.replace("Bearer ", "") || urlSecret;
-      
-      if (providedSecret !== adminSecret) {
-        return NextResponse.json({ error: "Unauthorized access" }, { status: 401 });
-      }
+    if (!validateAdminAuth(req)) {
+      return apiError("Unauthorized access", 401);
     }
 
     const state = await getQuotaState();
@@ -56,9 +50,6 @@ export async function GET(req: NextRequest) {
     });
   } catch (err: unknown) {
     console.error("Failed to query admin quotas status:", err);
-    return NextResponse.json(
-      { error: "Failed to determine system quota status (fail-closed)" },
-      { status: 503 }
-    );
+    return apiError("Failed to determine system quota status (fail-closed)", 503);
   }
 }

@@ -1,13 +1,21 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/mongodb";
 import { deleteObject } from "@/lib/r2";
 import { recordDeleteQuota, releaseUploadQuota } from "@/lib/quota";
+import { validateAdminAuth } from "@/lib/auth";
+import { apiError } from "@/lib/api-utils";
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  if (!validateAdminAuth(req)) {
+    return apiError("Unauthorized access", 401);
+  }
   return performCleanup();
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!validateAdminAuth(req)) {
+    return apiError("Unauthorized access", 401);
+  }
   return performCleanup();
 }
 
@@ -167,6 +175,6 @@ export async function performCleanup() {
   } catch (error: unknown) {
     console.error("Cleanup job error:", error);
     const errMsg = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: errMsg }, { status: 500 });
+    return apiError(errMsg, 500);
   }
 }

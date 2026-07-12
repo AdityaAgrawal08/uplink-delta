@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import crypto from "crypto";
 import { getDb, initIndexes } from "@/lib/mongodb";
 import { performCleanup } from "../../cleanup/route";
 import { redis } from "@/lib/redis";
@@ -9,6 +10,7 @@ import {
   hashPassword,
 } from "@/lib/crypto";
 import { reserveUploadQuota, releaseUploadQuota } from "@/lib/quota";
+import { apiError } from "@/lib/api-utils";
 
 export async function POST(req: NextRequest) {
   let size = 0;
@@ -17,7 +19,12 @@ export async function POST(req: NextRequest) {
   let quotaReserved = false;
 
   try {
-    const body = await req.json().catch(() => ({}));
+    const text = await req.text();
+    if (text.length > 1024 * 100) { // 100 KB max for init metadata
+      return apiError("Request body too large", 413);
+    }
+    const body = text ? JSON.parse(text) : {};
+
     const {
       filename,
       mimeType,
@@ -32,16 +39,13 @@ export async function POST(req: NextRequest) {
 
     // 1. Basic Validations
     if (!filename || typeof filename !== "string") {
-      return NextResponse.json({ error: "Filename is required" }, { status: 400 });
+      return apiError("Filename is required", 400);
     }
     if (size === undefined || typeof size !== "number" || size <= 0) {
-      return NextResponse.json({ error: "File size must be greater than 0" }, { status: 400 });
+      return apiError("File size must be greater than 0", 400);
     }
     if (!hashValue || typeof hashValue !== "string" || hashValue.length !== 64) {
-      return NextResponse.json(
-        { error: "Valid SHA-256 hashValue (64 chars hex) is required" },
-        { status: 400 }
-      );
+      return apiError("Valid SHA-256 hashValue (64 chars hex) is required", 400);
     }
 
     isMultipart = partsCount > 1;
@@ -49,10 +53,7 @@ export async function POST(req: NextRequest) {
     // Enforce limits: Max 500 MB for multipart directories, 200 MB for guest single-part files
     const MAX_SIZE = isMultipart ? 500 * 1024 * 1024 : 200 * 1024 * 1024;
     if (size > MAX_SIZE) {
-      return NextResponse.json(
-        { error: `File size exceeds ${isMultipart ? "500 MB directory" : "200 MB file"} limit` },
-        { status: 400 }
-      );
+      return apiError(`File size exceeds ${isMultipart ? "500 MB directory" : "200 MB file"} limit`, 400);
     }
 
     // Expiry verification
@@ -83,10 +84,7 @@ export async function POST(req: NextRequest) {
       if (lockAcquired === null) {
         const status = await redis.get(redisIdempotencyKey);
         if (status === "PROCESSING") {
-          return NextResponse.json(
-            { error: "A request with this Idempotency-Key is currently processing" },
-            { status: 409 }
-          );
+          return apiError("A request with this Idempotency-Key is currently processing", 409);
         }
         if (status) {
           return NextResponse.json(status);
@@ -94,8 +92,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Initialize MongoDB index checks in the background (non-blocking)
-    initIndexes().catch(err => console.error("Background index initialization failed:", err));
+    // Initialize MongoDB index checks on startup/first request
+    if (process.env.NODE_ENV === "production") {
+      await initIndexes();
+    } else {
+      initIndexes().catch(err => console.error("Background index initialization failed in dev:", err));
+    }
 
     const db = await getDb();
 
@@ -111,11 +113,9 @@ export async function POST(req: NextRequest) {
         if (redisIdempotencyKey) {
           await redis.del(redisIdempotencyKey);
         }
-        return NextResponse.json(
-          {
-            error: "Storage capacity has been reached. New uploads are temporarily unavailable. Please wait while older files are removed automatically to free space.",
-          },
-          { status: 503 }
+        return apiError(
+          "Storage capacity has been reached. New uploads are temporarily unavailable. Please wait while older files are removed automatically to free space.",
+          503
         );
       }
       quotaReserved = true;
@@ -124,12 +124,7 @@ export async function POST(req: NextRequest) {
       if (redisIdempotencyKey) {
         await redis.del(redisIdempotencyKey);
       }
-      return NextResponse.json(
-        {
-          error: "Uploads are temporarily unavailable due to system quota validation failure.",
-        },
-        { status: 503 }
-      );
+      return apiError("Uploads are temporarily unavailable due to system quota validation failure.", 503);
     }
 
     // 4. Share ID and Key construction
@@ -148,7 +143,7 @@ export async function POST(req: NextRequest) {
 
     const expiresAt = new Date(Date.now() + expirySec * 1000);
     const uploadExpiresAt = new Date(Date.now() + 2 * 3600 * 1000); // Upload session valid for 2h
-    const uploadUrlExpiry = 900; // Presigned URL valid for 15m
+    const uploadUrlExpiry = 7200; // Presigned URL valid for 2h (aligned with session expiry)
 
     let uploadId = "";
     let uploadUrl = null;
@@ -190,10 +185,7 @@ export async function POST(req: NextRequest) {
       if (redisIdempotencyKey) {
         await redis.del(redisIdempotencyKey);
       }
-      return NextResponse.json(
-        { error: "Unique download code generation failed due to collision limits" },
-        { status: 500 }
-      );
+      return apiError("Unique download code generation failed due to collision limits", 500);
     }
 
     // 5. Database Insert (Share & Upload Session)
@@ -276,6 +268,6 @@ export async function POST(req: NextRequest) {
       }
     }
     const errMsg = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: errMsg }, { status: 500 });
+    return apiError(errMsg, 500);
   }
 }

@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import crypto from "crypto";
 import { getDb } from "@/lib/mongodb";
 import { performCleanup } from "../../../cleanup/route";
 import { redis } from "@/lib/redis";
 import { getPresignedDownloadUrl } from "@/lib/r2";
 import { verifyPassword, anonymizeIp } from "@/lib/crypto";
 import { consumeClassBQuota } from "@/lib/quota";
+import { apiError } from "@/lib/api-utils";
 
 // Safe preview mime-types allowlist
 const SAFE_PREVIEW_TYPES = [
@@ -35,27 +37,18 @@ export async function POST(
       await redis.expire(rateLimitKey, 300);
     }
     if (attempts > 5) {
-      return NextResponse.json(
-        { error: "Too many failed attempts. Locked out for 5 minutes." },
-        { status: 429 }
-      );
+      return apiError("Too many failed attempts. Locked out for 5 minutes.", 429);
     }
 
     // 2. Class B Operation Quota check (Milestone 5)
     try {
       const classBApproved = await consumeClassBQuota();
       if (!classBApproved) {
-        return NextResponse.json(
-          { error: "Service is temporarily unavailable due to operations quota limit exhaustion." },
-          { status: 503 }
-        );
+        return apiError("Service is temporarily unavailable due to operations quota limit exhaustion.", 503);
       }
     } catch (quotaErr) {
       console.error("Fail-closed: Class B quota check error:", quotaErr);
-      return NextResponse.json(
-        { error: "Service is temporarily unavailable due to system quota validation failure." },
-        { status: 503 }
-      );
+      return apiError("Service is temporarily unavailable due to system quota validation failure.", 503);
     }
 
     const db = await getDb();
@@ -63,7 +56,7 @@ export async function POST(
     // 2. Fetch share document
     const share = await db.collection("shares").findOne({ $or: [{ shareId: id }, { downloadCode: id }] });
     if (!share) {
-      return NextResponse.json({ error: "Share not found" }, { status: 404 });
+      return apiError("Share not found", 404);
     }
 
     const now = new Date();
@@ -73,14 +66,11 @@ export async function POST(
       if (share.status !== "EXPIRED" && share.status !== "DELETED" && share.status !== "PENDING_DELETE") {
         await db.collection("shares").updateOne({ shareId: share.shareId }, { $set: { status: "EXPIRED" } });
       }
-      return NextResponse.json({ error: "This share link has expired" }, { status: 410 });
+      return apiError("This share link has expired", 410);
     }
 
     if (share.status !== "ACTIVE") {
-      return NextResponse.json(
-        { error: `This share link is not active (${share.status})` },
-        { status: 400 }
-      );
+      return apiError(`This share link is not active (${share.status})`, 400);
     }
 
     // 3. Password Verification
@@ -100,8 +90,8 @@ export async function POST(
       }
     }
 
-    // Reset rate-limit key on successful auth/verification
-    await redis.set(rateLimitKey, 0, { ex: 1 });
+    // Reset rate-limit key on successful auth/verification by deleting it
+    await redis.del(rateLimitKey);
 
     // 4. Atomic Download Counter and Limit Check
     const result = await db.collection("shares").findOneAndUpdate(
@@ -127,9 +117,9 @@ export async function POST(
       const refreshedShare = await db.collection("shares").findOne({ shareId: share.shareId });
       if (refreshedShare && refreshedShare.downloadsCount >= refreshedShare.downloadLimit) {
         await db.collection("shares").updateOne({ shareId: share.shareId }, { $set: { status: "EXPIRED" } });
-        return NextResponse.json({ error: "Download limit exceeded for this file" }, { status: 410 });
+        return apiError("Download limit exceeded for this file", 410);
       }
-      return NextResponse.json({ error: "Download authorization failed" }, { status: 400 });
+      return apiError("Download authorization failed", 400);
     }
 
     // 5. Generate Presigned GET URL
@@ -180,6 +170,6 @@ export async function POST(
   } catch (error: unknown) {
     console.error("Error in POST /api/v1/share/[id]/authorize-download:", error);
     const errMsg = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: errMsg }, { status: 500 });
+    return apiError(errMsg, 500);
   }
 }

@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import { getDb } from "@/lib/mongodb";
-import { checkObjectExists, completeMultipartUpload } from "@/lib/r2";
+import { checkObjectExists, completeMultipartUpload, s3Client } from "@/lib/r2";
 import { anonymizeIp } from "@/lib/crypto";
 import { commitUploadQuota, releaseUploadQuota } from "@/lib/quota";
+import { apiError } from "@/lib/api-utils";
 
 interface ShareData {
   shareId: string;
@@ -40,7 +44,7 @@ export async function POST(
     // 1. Fetch Share metadata
     share = (await db.collection("shares").findOne({ $or: [{ shareId: id }, { downloadCode: id }] })) as unknown as ShareData;
     if (!share) {
-      return NextResponse.json({ error: "Share session not found" }, { status: 404 });
+      return apiError("Share session not found", 404);
     }
 
     // Idempotent success response if already ACTIVE
@@ -53,10 +57,7 @@ export async function POST(
     }
 
     if (share.status !== "CREATED") {
-      return NextResponse.json(
-        { error: `Cannot confirm upload in status: ${share.status}` },
-        { status: 400 }
-      );
+      return apiError(`Cannot confirm upload in status: ${share.status}`, 400);
     }
 
     // 2. Fetch Upload Session
@@ -65,7 +66,7 @@ export async function POST(
       .findOne({ shareId: share.shareId })) as unknown as UploadSessionData;
     
     if (!uploadSession) {
-      return NextResponse.json({ error: "Upload session not found" }, { status: 404 });
+      return apiError("Upload session not found", 404);
     }
 
     const now = new Date();
@@ -80,7 +81,7 @@ export async function POST(
         .updateOne({ shareId: share.shareId }, { $set: { status: "EXPIRED" } });
       const estimatedOps = uploadSession.isMultipart ? uploadSession.partsCount + 2 : 1;
       await releaseUploadQuota(share.size, estimatedOps);
-      return NextResponse.json({ error: "Upload session has expired" }, { status: 410 });
+      return apiError("Upload session has expired", 410);
     }
 
     let finalCrc64 = null;
@@ -91,10 +92,7 @@ export async function POST(
       if (!parts || !Array.isArray(parts)) {
         const estimatedOps = uploadSession.partsCount + 2;
         await releaseUploadQuota(share.size, estimatedOps);
-        return NextResponse.json(
-          { error: "Parts list is required to complete multipart upload" },
-          { status: 400 }
-        );
+        return apiError("Parts list is required to complete multipart upload", 400);
       }
 
       // Assemble chunks in R2/S3 or mock storage
@@ -107,10 +105,7 @@ export async function POST(
       if (completionResult.error) {
         const estimatedOps = uploadSession.partsCount + 2;
         await releaseUploadQuota(share.size, estimatedOps);
-        return NextResponse.json(
-          { error: `Failed to complete multipart assembly: ${completionResult.error}` },
-          { status: 400 }
-        );
+        return apiError(`Failed to complete multipart assembly: ${completionResult.error}`, 400);
       }
 
       finalEtag = completionResult.etag;
@@ -120,10 +115,7 @@ export async function POST(
       if (!objDetails.exists) {
         const estimatedOps = uploadSession.partsCount + 2;
         await releaseUploadQuota(share.size, estimatedOps);
-        return NextResponse.json(
-          { error: "Uploaded file was not found in object storage after assembly" },
-          { status: 404 }
-        );
+        return apiError("Uploaded file was not found in object storage after assembly", 404);
       }
 
       finalCrc64 = objDetails.checksumCrc64nvme || completionResult.checksumCrc64nvme;
@@ -136,10 +128,7 @@ export async function POST(
             .updateOne({ shareId: id }, { $set: { status: "VERIFY_FAILED" } });
           const estimatedOps = uploadSession.partsCount + 2;
           await releaseUploadQuota(share.size, estimatedOps);
-          return NextResponse.json(
-            { error: "Integrity check failed: multipart full-object CRC64NVME does not match client expectation" },
-            { status: 412 }
-          );
+          return apiError("Integrity check failed: multipart full-object CRC64NVME does not match client expectation", 412);
         }
       }
     } else {
@@ -147,37 +136,41 @@ export async function POST(
       const objDetails = await checkObjectExists(share.objectKey);
       if (!objDetails.exists) {
         await releaseUploadQuota(share.size, 1);
-        return NextResponse.json(
-          { error: "Uploaded file was not found in object storage" },
-          { status: 404 }
-        );
+        return apiError("Uploaded file was not found in object storage", 404);
       }
 
       if (objDetails.size <= 0) {
         await releaseUploadQuota(share.size, 1);
-        return NextResponse.json(
-          { error: "Uploaded file cannot be empty (0 bytes)" },
-          { status: 400 }
-        );
+        return apiError("Uploaded file cannot be empty (0 bytes)", 400);
       }
 
       // Verify SHA-256 integrity
       const expectedHex = share.hashValue.toLowerCase();
       let verified = false;
 
-      if (objDetails.checksumSha256) {
-        let r2Hex = objDetails.checksumSha256.toLowerCase();
-        if (!/^[a-f0-9]{64}$/.test(r2Hex)) {
-          try {
-            r2Hex = Buffer.from(objDetails.checksumSha256, "base64").toString("hex").toLowerCase();
-          } catch {}
-        }
-        if (r2Hex === expectedHex) {
-          verified = true;
+      const isMock = !s3Client || process.env.FORCE_MOCK_STORAGE === "true";
+
+      if (isMock) {
+        // In mock mode, calculate actual file SHA-256
+        const localPath = path.join(process.cwd(), "uploads_dev", share.objectKey);
+        if (fs.existsSync(localPath)) {
+          const content = fs.readFileSync(localPath);
+          const computed = crypto.createHash("sha256").update(content).digest("hex");
+          verified = computed === expectedHex;
         }
       } else {
-        // Fallback for mock mode or unpopulated checksum header
-        verified = true;
+        // In real R2 mode, validate against R2 header
+        if (objDetails.checksumSha256) {
+          let r2Hex = objDetails.checksumSha256.toLowerCase();
+          if (!/^[a-f0-9]{64}$/.test(r2Hex)) {
+            try {
+              r2Hex = Buffer.from(objDetails.checksumSha256, "base64").toString("hex").toLowerCase();
+            } catch {}
+          }
+          if (r2Hex === expectedHex) {
+            verified = true;
+          }
+        }
       }
 
       if (!verified) {
@@ -185,10 +178,7 @@ export async function POST(
           .collection("upload_sessions")
           .updateOne({ shareId: id }, { $set: { status: "VERIFY_FAILED" } });
         await releaseUploadQuota(share.size, 1);
-        return NextResponse.json(
-          { error: "Integrity check failed: uploaded file SHA-256 does not match client expectation" },
-          { status: 412 }
-        );
+        return apiError("Integrity check failed: uploaded file SHA-256 does not match client expectation", 412);
       }
     }
 
@@ -212,7 +202,7 @@ export async function POST(
     if (!updateShareResult) {
       const estimatedOps = uploadSession.isMultipart ? uploadSession.partsCount + 2 : 1;
       await releaseUploadQuota(share.size, estimatedOps);
-      return NextResponse.json({ error: "Conflict updating share status" }, { status: 409 });
+      return apiError("Conflict updating share status", 409);
     }
 
     await db
@@ -265,6 +255,6 @@ export async function POST(
       }
     }
     const errMsg = error instanceof Error ? error.message : "Internal Server Error";
-    return NextResponse.json({ error: errMsg }, { status: 500 });
+    return apiError(errMsg, 500);
   }
 }

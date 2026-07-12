@@ -1,4 +1,5 @@
 import { MongoClient, Db } from "mongodb";
+import { validateEnv } from "./env";
 
 const uri = process.env.MONGODB_URI;
 
@@ -29,9 +30,7 @@ function getClientPromise(): Promise<MongoClient> {
 }
 
 export async function getDb(): Promise<Db> {
-  if (process.env.NODE_ENV === "production" && !uri) {
-    throw new Error("MONGODB_URI environment variable is missing.");
-  }
+  validateEnv();
   const connection = await getClientPromise();
   return connection.db();
 }
@@ -47,12 +46,13 @@ interface QuotaDocument {
   quotaEvents: Array<{ timestamp: Date; type: string; message: string }>;
 }
 
-let indexesInitialized = false;
+let indexesPromise: Promise<void> | null = null;
 
 // Helper to initialize indexes
-export async function initIndexes() {
-  if (indexesInitialized) return;
-  try {
+export function initIndexes(): Promise<void> {
+  if (indexesPromise) return indexesPromise;
+
+  indexesPromise = (async () => {
     const db = await getDb();
     
     // Unique shareId index
@@ -101,10 +101,13 @@ export async function initIndexes() {
         ],
       });
     }
-    
-    indexesInitialized = true;
     console.log("MongoDB Indexes and Quotas initialized successfully.");
-  } catch (error) {
+  })();
+
+  indexesPromise.catch((error) => {
     console.error("Failed to initialize MongoDB indexes:", error);
-  }
+    indexesPromise = null;
+  });
+
+  return indexesPromise;
 }

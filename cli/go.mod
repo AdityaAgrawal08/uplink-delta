@@ -1,4 +1,4 @@
-module uplink-cli
+module github.com/AdityaAgrawal08/uplink-delta/cli
 
 go 1.21
 

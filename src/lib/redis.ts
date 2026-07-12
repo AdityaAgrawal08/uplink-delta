@@ -90,10 +90,9 @@ if (redisUrl && redisToken) {
   }) as unknown as IRedisClient;
 } else {
   if (process.env.NODE_ENV === "production") {
-    console.error("Warning: Redis credentials missing in production. Falling back to in-memory MockRedis.");
-  } else {
-    console.log("Upstash Redis credentials missing. Using local in-memory MockRedis.");
+    throw new Error("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be set in production");
   }
+  console.log("Upstash Redis credentials missing. Using local in-memory MockRedis (dev only).");
   redis = new MockRedis();
 }
 

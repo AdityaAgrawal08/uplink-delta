@@ -23,12 +23,7 @@ export let s3Client: S3Client | null = null;
 
 const isPlaceholder = (val: string | undefined) => {
   if (!val) return true;
-  return (
-    val.includes("<") ||
-    val.includes(">") ||
-    val.includes("_here") ||
-    val.includes("example")
-  );
+  return /<.*>|_here|placeholder|example|your_|xxxx|test_/i.test(val);
 };
 
 if (
@@ -238,7 +233,7 @@ export async function getPresignedMultipartUrls(
       PartNumber: i,
       ChecksumAlgorithm: "CRC64NVME",
     });
-    const url = await getSignedUrl(s3Client, partCommand, { expiresIn: 3600 });
+    const url = await getSignedUrl(s3Client, partCommand, { expiresIn: 7200 });
     urls.push(url);
   }
 
