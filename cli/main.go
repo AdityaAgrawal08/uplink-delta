@@ -139,7 +139,7 @@ func getServerDefault() string {
 	if val := os.Getenv("UPLINK_SERVER"); val != "" {
 		return strings.TrimRight(val, "/")
 	}
-	return "http://localhost:3000"
+	return "https://uplink-delta-xi.vercel.app/"
 }
 
 func handleSend(args []string) {
@@ -181,7 +181,7 @@ func handleSend(args []string) {
 	if fileInfo.IsDir() {
 		isDirectory = true
 		fmt.Printf("Detected directory. Packaging '%s' to tarball...\n", originalName)
-		
+
 		// Create temporary file
 		tempFile, err := os.CreateTemp("", "uplink_tarball_*.tar.gz")
 		if err != nil {
@@ -193,7 +193,7 @@ func handleSend(args []string) {
 		defer os.Remove(filePath) // Ensure cleanup on exit
 
 		// Open write descriptor
-		outFd, err := os.OpenFile(filePath, os.O_WRONLY, 0600)
+		outFd, err := os.OpenFile(filePath, os.O_WRONLY, 0o600)
 		if err != nil {
 			fmt.Printf("Error opening temp tarball for writing: %v\n", err)
 			os.Exit(1)
@@ -355,7 +355,7 @@ func handleSend(args []string) {
 			n, readErr := file.Read(buffer)
 			if n > 0 {
 				chunk := buffer[:n]
-				
+
 				// Compute part checksum
 				partHasher := crc64.New()
 				partHasher.Write(chunk)
@@ -419,7 +419,7 @@ func handleSend(args []string) {
 			fmt.Printf("Error creating PUT request: %v\n", err)
 			os.Exit(1)
 		}
-		
+
 		// SHA-256 header required for single-part
 		hashBase64 := base64.StdEncoding.EncodeToString(hashBytes)
 		putReq.Header.Set("Content-Type", "application/octet-stream")
@@ -558,7 +558,7 @@ func handleReceive(args []string) {
 
 	isArchive := strings.HasSuffix(meta.Filename, ".tar.gz")
 	cleanFilename := cleanPrintName(meta.Filename)
-	
+
 	if isArchive {
 		originalDirName := cleanFilename[:len(cleanFilename)-len(".tar.gz")]
 		fmt.Printf("Directory details found:\n  Name: %s\n  Archive Size: %d bytes\n", originalDirName, meta.Size)
@@ -645,7 +645,7 @@ func handleReceive(args []string) {
 			parentDir := filepath.Dir(destPath)
 			if _, pErr := os.Stat(parentDir); os.IsNotExist(pErr) {
 				if *mkdirFlag || *mkdirShortFlag {
-					err = os.MkdirAll(parentDir, 0755)
+					err = os.MkdirAll(parentDir, 0o755)
 					if err != nil {
 						fmt.Printf("Error creating directory %s: %v\n", parentDir, err)
 						os.Exit(1)
@@ -723,7 +723,7 @@ func handleReceive(args []string) {
 		os.Exit(1)
 	}
 
-	outFd, err := os.OpenFile(tempTarFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	outFd, err := os.OpenFile(tempTarFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		if os.IsPermission(err) {
 			fmt.Println("Error: Permission denied writing to destination.")
@@ -767,7 +767,7 @@ func handleReceive(args []string) {
 	// Unpack directory if archive
 	if isArchive {
 		fmt.Printf("Extracting folder contents to '%s'...\n", finalExtractDir)
-		
+
 		tarReader, err := os.Open(tempTarFile)
 		if err != nil {
 			fmt.Printf("Error opening download archive: %v\n", err)
