@@ -186,6 +186,11 @@ export async function POST(
           if (r2Hex === expectedHex) {
             verified = true;
           }
+        } else {
+          // Fall back to size verification if object storage provider doesn't support SHA-256 headers
+          if (objDetails.size === share.size) {
+            verified = true;
+          }
         }
       }
 
