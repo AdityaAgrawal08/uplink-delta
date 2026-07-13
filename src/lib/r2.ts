@@ -67,9 +67,6 @@ export async function getPresignedUploadUrl(
     return `${process.env.APP_URL || "http://localhost:3000"}/api/v1/mock-r2-upload?key=${encodeURIComponent(objectKey)}&sha256=${encodeURIComponent(hashValue)}&mimeType=${encodeURIComponent(mimeType)}`;
   }
 
-  // Convert hex hash to base64 for S3 ChecksumSHA256 header validation
-  const base64Hash = Buffer.from(hashValue, "hex").toString("base64");
-
   const command = new PutObjectCommand({
     Bucket: getBucketName(),
     Key: objectKey,

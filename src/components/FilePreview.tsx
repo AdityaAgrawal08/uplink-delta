@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import QRCode from "qrcode";
 import SyntaxHighlighter from "./SyntaxHighlighter";
 
 interface ShareMetadata {
@@ -11,6 +12,8 @@ interface ShareMetadata {
   hashValue: string;
   passwordRequired: boolean;
   isEncrypted?: boolean;
+  createdAt: string | null;
+  expiresAt: string | null;
 }
 
 interface Props {
@@ -44,17 +47,44 @@ export default function FilePreview({ share }: Props) {
   const [textContent, setTextContent] = useState<string | null>(null);
   const [textLoading, setTextLoading] = useState(false);
 
-  if (share.isEncrypted) {
-    return (
-      <div className="preview-container password-box">
-        <h3>🔒 End-to-End Encrypted</h3>
-        <p>This file is encrypted client-side and cannot be decrypted by the browser.</p>
-        <p className="subtitle">Please use the Uplink CLI to download and decrypt this file.</p>
-      </div>
-    );
-  }
+  const [qrUrl, setQrUrl] = useState("");
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedText, setCopiedText] = useState(false);
 
   const previewType = getPreviewType(share.mimeType, share.filename);
+  const fileExt = share.filename.split(".").pop()?.toLowerCase() || "txt";
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      QRCode.toDataURL(window.location.href, {
+        margin: 2,
+        errorCorrectionLevel: "Q", // Q offers high reliability with reasonable density
+        width: 256,
+      })
+        .then((url) => setQrUrl(url))
+        .catch((err) => console.error("Failed to generate QR code:", err));
+    }
+  }, []);
+
+  const formatDate = (isoString: string | null) => {
+    if (!isoString) return "N/A";
+    const date = new Date(isoString);
+    return date.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  };
 
   const handleAuthorize = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,7 +122,7 @@ export default function FilePreview({ share }: Props) {
         const res = await fetch(`/api/v1/share/${share.shareId}/authorize-download`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ password }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to get download URL");
@@ -118,7 +148,7 @@ export default function FilePreview({ share }: Props) {
       const res = await fetch(`/api/v1/share/${share.shareId}/authorize-download`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ password }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -129,11 +159,73 @@ export default function FilePreview({ share }: Props) {
     return "";
   };
 
+  const handleDownload = async () => {
+    setLoading(true);
+    const url = await ensureDownloadUrl();
+    setLoading(false);
+    if (url) {
+      window.location.href = url;
+    } else {
+      setError("Failed to retrieve file download link.");
+    }
+  };
+
+  const handleShare = async () => {
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({
+          title: `Shared File: ${share.filename}`,
+          text: `Download ${share.filename} from Uplink.`,
+          url: window.location.href,
+        });
+        return;
+      } catch {}
+    }
+    handleCopyLink();
+  };
+
+  const handleCopyLink = () => {
+    if (typeof navigator !== "undefined") {
+      navigator.clipboard.writeText(window.location.href);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    }
+  };
+
+  const handleCopyText = () => {
+    if (typeof navigator !== "undefined" && textContent) {
+      navigator.clipboard.writeText(textContent);
+      setCopiedText(true);
+      setTimeout(() => setCopiedText(false), 2000);
+    }
+  };
+
+  const handleDownloadTextLocal = () => {
+    if (!textContent) return;
+    const blob = new Blob([textContent], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = share.filename.endsWith(".txt") ? share.filename : `${share.filename}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  if (share.isEncrypted) {
+    return (
+      <div className="preview-container password-box">
+        <h3>🔒 End-to-End Encrypted</h3>
+        <p>This file is encrypted client-side and cannot be decrypted by the browser.</p>
+        <p className="subtitle">Please use the Uplink CLI to download and decrypt this file.</p>
+      </div>
+    );
+  }
+
   if (!authorized) {
     return (
       <div className="preview-container password-box">
         <h3>🔑 Password Protected</h3>
-        <p className="subtitle">Enter password to preview file</p>
+        <p className="subtitle">Enter password to preview and download file</p>
         <form onSubmit={handleAuthorize} className="flex-row">
           <input
             type="password"
@@ -156,62 +248,121 @@ export default function FilePreview({ share }: Props) {
     ensureDownloadUrl();
   }
 
-  const fileExt = share.filename.split(".").pop()?.toLowerCase() || "txt";
-
   return (
-    <div className="preview-container">
-      <h3>📄 File Preview: {share.filename}</h3>
-      <div className="preview-body">
-        {previewType === "text" && (
-          <div>
-            {!textContent ? (
-              <button onClick={fetchTextContent} disabled={textLoading} className="btn-secondary">
-                {textLoading ? "Loading content..." : "Show Text Preview"}
-              </button>
-            ) : (
-              <div className="text-preview-box">
-                <SyntaxHighlighter code={textContent} language={fileExt} />
-                {share.size > 100000 && (
-                  <p className="preview-note">* Content truncated to first 100 KB</p>
-                )}
-              </div>
-            )}
+    <div className="share-card-layout">
+      {/* Meta Header Panel */}
+      <div className="meta-header-box">
+        <div className="meta-text-group">
+          <h2>{share.filename}</h2>
+          <div className="meta-info-grid">
+            <div className="meta-item">
+              <span className="meta-label">Size</span>
+              <span className="meta-val">{formatBytes(share.size)}</span>
+            </div>
+            <div className="meta-item">
+              <span className="meta-label">Uploaded</span>
+              <span className="meta-val">{formatDate(share.createdAt)}</span>
+            </div>
+            <div className="meta-item">
+              <span className="meta-label">Expires</span>
+              <span className="meta-val expiry-val">{formatDate(share.expiresAt)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Compact QR Code Container */}
+        {qrUrl && (
+          <div className="qr-container-wrapper">
+            <div className="qr-container">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={qrUrl} alt="Scan to share" width={96} height={96} className="qr-image" />
+            </div>
+            <span className="qr-caption">Scan to Share</span>
           </div>
         )}
+      </div>
 
-        {previewType === "image" && downloadUrl && (
-          <div className="media-preview-box">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={downloadUrl} alt={share.filename} loading="lazy" className="img-preview" />
-          </div>
-        )}
+      {/* Action Toolbar */}
+      <div className="action-toolbar">
+        <button onClick={handleDownload} disabled={loading} className="btn-primary flex-center">
+          {loading ? "Preparing..." : "📥 Download Original"}
+        </button>
+        <button onClick={handleShare} className="btn-secondary flex-center">
+          {copiedLink ? "✓ Link Copied" : "🔗 Share Link"}
+        </button>
+      </div>
 
-        {previewType === "video" && downloadUrl && (
-          <div className="media-preview-box">
-            <video src={downloadUrl} controls preload="metadata" className="video-preview" />
-          </div>
-        )}
+      {/* Preview Section */}
+      <div className="preview-container">
+        <h3>📄 File Preview</h3>
+        <div className="preview-body">
+          {previewType === "text" && (
+            <div className="text-preview-container">
+              {!textContent ? (
+                <div className="text-preview-teaser">
+                  <p className="subtitle">Text preview is available for this file.</p>
+                  <button onClick={fetchTextContent} disabled={textLoading} className="btn-secondary">
+                    {textLoading ? "Loading preview..." : "🔍 Show Text Preview"}
+                  </button>
+                </div>
+              ) : (
+                <div className="text-preview-box-enhanced">
+                  <div className="text-action-header">
+                    <span className="text-badge">{fileExt.toUpperCase()}</span>
+                    <div className="flex-row-small">
+                      <button onClick={handleCopyText} className="btn-text">
+                        {copiedText ? "✓ Copied" : "📋 Copy"}
+                      </button>
+                      <button onClick={handleDownloadTextLocal} className="btn-text">
+                        💾 Save as .txt
+                      </button>
+                    </div>
+                  </div>
+                  <div className="syntax-scroller">
+                    <SyntaxHighlighter code={textContent} language={fileExt} />
+                  </div>
+                  {share.size > 100000 && (
+                    <p className="preview-note">* Content truncated to first 100 KB</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
-        {previewType === "audio" && downloadUrl && (
-          <div className="media-preview-box">
-            <audio src={downloadUrl} controls className="audio-preview" />
-          </div>
-        )}
+          {previewType === "image" && downloadUrl && (
+            <div className="media-preview-box">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={downloadUrl} alt={share.filename} loading="lazy" className="img-preview" />
+            </div>
+          )}
 
-        {previewType === "pdf" && downloadUrl && (
-          <div className="pdf-preview-box">
-            <iframe src={downloadUrl} className="pdf-frame" title="PDF Preview" />
-          </div>
-        )}
+          {previewType === "video" && downloadUrl && (
+            <div className="media-preview-box">
+              <video src={downloadUrl} controls preload="metadata" className="video-preview" />
+            </div>
+          )}
 
-        {previewType === "other" && (
-          <div className="no-preview-box">
-            <p>Preview is not supported for this file format.</p>
-            <p className="subtitle">Please download using the CLI commands above.</p>
-          </div>
-        )}
+          {previewType === "audio" && downloadUrl && (
+            <div className="media-preview-box">
+              <audio src={downloadUrl} controls className="audio-preview" />
+            </div>
+          )}
 
-        {error && <p className="error-text">{error}</p>}
+          {previewType === "pdf" && downloadUrl && (
+            <div className="pdf-preview-box">
+              <iframe src={downloadUrl} className="pdf-frame" title="PDF Preview" />
+            </div>
+          )}
+
+          {previewType === "other" && (
+            <div className="no-preview-box">
+              <p className="no-preview-title">⚠️ Preview is not supported for this file format.</p>
+              <p className="subtitle">You can still download the original file safely using the button above.</p>
+            </div>
+          )}
+
+          {error && <p className="error-text">{error}</p>}
+        </div>
       </div>
     </div>
   );

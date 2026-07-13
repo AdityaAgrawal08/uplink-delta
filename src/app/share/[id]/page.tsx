@@ -23,6 +23,8 @@ export default async function SharePage(props: { params: Promise<{ id: string }>
     hashValue: share.hashValue,
     passwordRequired: !!share.passwordHash,
     isEncrypted: !!share.isEncrypted,
+    createdAt: share.createdAt ? new Date(share.createdAt).toISOString() : null,
+    expiresAt: share.expiresAt ? new Date(share.expiresAt).toISOString() : null,
   };
 
   return (
