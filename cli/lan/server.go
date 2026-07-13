@@ -2,22 +2,25 @@ package lan
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 )
 
 var ActiveConnections int32
+var DownloadsCompleted int32
 
 func GetActiveConnections() int32 {
 	return atomic.LoadInt32(&ActiveConnections)
 }
 
-func ServeFileLAN(ctx context.Context, path string, port int, cert tls.Certificate, onComplete func()) error {
+func ServeFileLAN(ctx context.Context, path string, port int, cert tls.Certificate, shareCode string, password string, downloadLimit int, onComplete func()) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -30,13 +33,44 @@ func ServeFileLAN(ctx context.Context, path string, port int, cert tls.Certifica
 		},
 	}
 
+	var completeOnce sync.Once
+
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&ActiveConnections, 1)
 
+		// 1. Enforce share code matching
+		clientShareCode := r.Header.Get("X-Uplink-Share-Code")
+		if subtle.ConstantTimeCompare([]byte(clientShareCode), []byte(shareCode)) != 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("Unauthorized: share code mismatch"))
+			return
+		}
+
+		// 2. Enforce password protection
+		if password != "" {
+			clientPassword := r.Header.Get("X-Uplink-Password")
+			if subtle.ConstantTimeCompare([]byte(clientPassword), []byte(password)) != 1 {
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte("Forbidden: invalid password"))
+				return
+			}
+		}
+
+		// 3. Enforce download limits
+		if downloadLimit > 0 {
+			completed := atomic.LoadInt32(&DownloadsCompleted)
+			if int(completed) >= downloadLimit {
+				w.WriteHeader(http.StatusGone)
+				w.Write([]byte("Gone: download limit exceeded"))
+				return
+			}
+		}
+
+		// 4. Validate file state changes (mtime)
 		currentInfo, err := os.Stat(path)
 		if err != nil || currentInfo.ModTime().Unix() != info.ModTime().Unix() || currentInfo.Size() != info.Size() {
 			w.WriteHeader(http.StatusConflict)
-			w.Write([]byte("File modified since server start"))
+			w.Write([]byte("Conflict: file modified since server start"))
 			return
 		}
 
@@ -48,10 +82,13 @@ func ServeFileLAN(ctx context.Context, path string, port int, cert tls.Certifica
 
 		// Serve completed, run completion callback
 		if r.Method == "GET" {
+			atomic.AddInt32(&DownloadsCompleted, 1)
 			go func() {
-				if onComplete != nil {
-					onComplete()
-				}
+				completeOnce.Do(func() {
+					if onComplete != nil {
+						onComplete()
+					}
+				})
 			}()
 		}
 	})

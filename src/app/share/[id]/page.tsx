@@ -22,6 +22,7 @@ export default async function SharePage(props: { params: Promise<{ id: string }>
     mimeType: share.mimeType,
     hashValue: share.hashValue,
     passwordRequired: !!share.passwordHash,
+    isEncrypted: !!share.isEncrypted,
   };
 
   return (

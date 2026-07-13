@@ -18,6 +18,8 @@ export async function POST(req: NextRequest) {
   let partsCount = 0;
   let isMultipart = false;
   let quotaReserved = false;
+  let success = false;
+  let redisIdempotencyKey: string | null = null;
 
   try {
     // Rate Limiting check
@@ -46,6 +48,7 @@ export async function POST(req: NextRequest) {
       expiresInSeconds,
       downloadLimit,
       checksumCrc64nvme,
+      isEncrypted,
     } = body;
     size = Number(body.size);
     partsCount = Number(body.partsCount) || 0;
@@ -92,7 +95,7 @@ export async function POST(req: NextRequest) {
 
     // 2. Idempotency Check
     const idempotencyKey = req.headers.get("idempotency-key");
-    const redisIdempotencyKey = idempotencyKey ? `idempotency:${idempotencyKey}` : null;
+    redisIdempotencyKey = idempotencyKey ? `idempotency:${idempotencyKey}` : null;
 
     if (redisIdempotencyKey) {
       const lockAcquired = await redis.set(redisIdempotencyKey, "PROCESSING", {
@@ -106,6 +109,7 @@ export async function POST(req: NextRequest) {
           return apiError("A request with this Idempotency-Key is currently processing", 409);
         }
         if (status) {
+          success = true;
           return NextResponse.json(status);
         }
       }
@@ -129,9 +133,6 @@ export async function POST(req: NextRequest) {
     try {
       const quotaApproved = await reserveUploadQuota(size, estimatedClassAOps);
       if (!quotaApproved) {
-        if (redisIdempotencyKey) {
-          await redis.del(redisIdempotencyKey);
-        }
         return apiError(
           "Storage capacity has been reached. New uploads are temporarily unavailable. Please wait while older files are removed automatically to free space.",
           503
@@ -140,9 +141,6 @@ export async function POST(req: NextRequest) {
       quotaReserved = true;
     } catch (quotaErr) {
       console.error("Fail-closed: Quota check error:", quotaErr);
-      if (redisIdempotencyKey) {
-        await redis.del(redisIdempotencyKey);
-      }
       return apiError("Uploads are temporarily unavailable due to system quota validation failure.", 503);
     }
 
@@ -201,9 +199,6 @@ export async function POST(req: NextRequest) {
     }
 
     if (!isCodeUnique) {
-      if (redisIdempotencyKey) {
-        await redis.del(redisIdempotencyKey);
-      }
       return apiError("Unique download code generation failed due to collision limits", 500);
     }
 
@@ -222,6 +217,7 @@ export async function POST(req: NextRequest) {
       hashValue,
       checksumCrc64nvme: checksumCrc64nvme || null,
       passwordHash,
+      isEncrypted: isEncrypted === true,
       status: "CREATED",
       createdAt: date,
       expiresAt,
@@ -275,6 +271,7 @@ export async function POST(req: NextRequest) {
       await performCleanup().catch(err => console.error("Background cleanup failed:", err));
     });
 
+    success = true;
     return NextResponse.json(responseData, { status: 201 });
   } catch (error: unknown) {
     console.error("Error in POST /api/v1/share/init:", error);
@@ -288,5 +285,9 @@ export async function POST(req: NextRequest) {
     }
     const errMsg = error instanceof Error ? error.message : "Internal Server Error";
     return apiError(errMsg, 500);
+  } finally {
+    if (redisIdempotencyKey && !success) {
+      await redis.del(redisIdempotencyKey).catch(err => console.error("Failed to clean up idempotency key on error:", err));
+    }
   }
 }

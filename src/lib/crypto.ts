@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import path from "path";
-import { argon2id } from "hash-wasm";
+import { argon2id, argon2Verify } from "hash-wasm";
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
@@ -17,50 +17,7 @@ export async function hashPassword(password: string): Promise<string> {
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
   try {
-    const parts = hash.split("$");
-    // Expected format: $argon2id$v=19$m=16384,t=3,p=1$salt$hash
-    // split gives: ["", "argon2id", "v=19", "m=16384,t=3,p=1", "salt", "hash"]
-    if (parts.length < 6 || parts[1] !== "argon2id") {
-      return false;
-    }
-
-    const paramParts = parts[3].split(",");
-    let memorySize = 16384;
-    let iterations = 3;
-    let parallelism = 1;
-
-    for (const param of paramParts) {
-      const [key, value] = param.split("=");
-      if (key === "m") memorySize = parseInt(value, 10);
-      if (key === "t") iterations = parseInt(value, 10);
-      if (key === "p") parallelism = parseInt(value, 10);
-    }
-
-    const saltBase64 = parts[4];
-    // Re-add base64 padding if stripped
-    const paddedSalt = saltBase64.padEnd(
-      saltBase64.length + ((4 - (saltBase64.length % 4)) % 4),
-      "="
-    );
-    const saltBytes = Buffer.from(paddedSalt, "base64");
-
-    const recomputed = await argon2id({
-      password,
-      salt: saltBytes,
-      iterations,
-      memorySize,
-      parallelism,
-      hashLength: 32,
-      outputType: "encoded",
-    });
-
-    const a = Buffer.from(recomputed);
-    const b = Buffer.from(hash);
-    if (a.length !== b.length) {
-      crypto.timingSafeEqual(a, a);
-      return false;
-    }
-    return crypto.timingSafeEqual(a, b);
+    return await argon2Verify({ password, hash });
   } catch (error) {
     console.error("Argon2id password verification failed:", error);
     return false;

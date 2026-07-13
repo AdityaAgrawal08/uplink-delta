@@ -62,5 +62,6 @@ func PrintQRCode(url string) {
 	// ToString(true) uses UTF-8 half-block characters inverted for dark backgrounds
 	qrString := qr.ToString(true)
 	fmt.Println(qrString)
-	fmt.Println("  Scan with your phone camera to open\n")
+	fmt.Println("  Scan with your phone camera to open")
+	fmt.Println()
 }

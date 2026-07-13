@@ -11,14 +11,15 @@ import (
 )
 
 type ResumeState struct {
-	ShareId    string   `json:"shareId"`
-	UploadId   string   `json:"uploadId"`
-	UploadUrls []string `json:"uploadUrls"`
-	FileSize   int64    `json:"size"`
-	SHA256     string   `json:"sha256"`
-	Done       []int    `json:"done"`
-	TotalParts int      `json:"total"`
-	Timestamp  string   `json:"ts"`
+	ShareId    string     `json:"shareId"`
+	UploadId   string     `json:"uploadId"`
+	UploadUrls []string   `json:"uploadUrls"`
+	FileSize   int64      `json:"size"`
+	SHA256     string     `json:"sha256"`
+	Done       []int      `json:"done"`
+	Parts      []PartInfo `json:"parts,omitempty"`
+	TotalParts int        `json:"total"`
+	Timestamp  string     `json:"ts"`
 }
 
 func getResumeDir() string {

@@ -29,15 +29,22 @@ export async function POST(
     const clientIp = req.headers.get("x-forwarded-for") || "127.0.0.1";
     const ipHash = anonymizeIp(clientIp);
 
-    // 1. Rate Limiting check
-    const rateLimitKey = `rate:download:${ipHash}:${id}`;
-    const attempts = await redis.incr(rateLimitKey);
-    if (attempts === 1) {
-      // 5-minute window
-      await redis.expire(rateLimitKey, 300);
+    const db = await getDb();
+
+    // Fetch share document
+    const share = await db.collection("shares").findOne({ $or: [{ shareId: id }, { downloadCode: id }] });
+    if (!share) {
+      return apiError("Share not found", 404);
     }
-    if (attempts > 5) {
-      return apiError("Too many failed attempts. Locked out for 5 minutes.", 429);
+
+    // 1. Rate Limiting check
+    const rateLimitKey = `rate:download:${ipHash}:${share.shareId}`;
+    if (share.passwordHash) {
+      const attemptsStr = await redis.get(rateLimitKey);
+      const attempts = typeof attemptsStr === "string" ? parseInt(attemptsStr, 10) : 0;
+      if (attempts > 5) {
+        return apiError("Too many failed attempts. Locked out for 5 minutes.", 429);
+      }
     }
 
     // 2. Class B Operation Quota check (Milestone 5)
@@ -49,14 +56,6 @@ export async function POST(
     } catch (quotaErr) {
       console.error("Fail-closed: Class B quota check error:", quotaErr);
       return apiError("Service is temporarily unavailable due to system quota validation failure.", 503);
-    }
-
-    const db = await getDb();
-
-    // 2. Fetch share document
-    const share = await db.collection("shares").findOne({ $or: [{ shareId: id }, { downloadCode: id }] });
-    if (!share) {
-      return apiError("Share not found", 404);
     }
 
     const now = new Date();
@@ -83,15 +82,17 @@ export async function POST(
       }
       const isPasswordValid = await verifyPassword(password, share.passwordHash);
       if (!isPasswordValid) {
+        const attempts = await redis.incr(rateLimitKey);
+        if (attempts === 1) {
+          await redis.expire(rateLimitKey, 300); // 5-minute window
+        }
         return NextResponse.json(
           { error: "Incorrect password", passwordRequired: true },
           { status: 401 }
         );
       }
+      await redis.del(rateLimitKey);
     }
-
-    // Reset rate-limit key on successful auth/verification by deleting it
-    await redis.del(rateLimitKey);
 
     // 4. Atomic Download Counter and Limit Check
     const result = await db.collection("shares").findOneAndUpdate(

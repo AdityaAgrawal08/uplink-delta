@@ -10,6 +10,7 @@ interface ShareMetadata {
   mimeType: string;
   hashValue: string;
   passwordRequired: boolean;
+  isEncrypted?: boolean;
 }
 
 interface Props {
@@ -34,6 +35,16 @@ function getPreviewType(mime: string, name: string): PreviewType {
 }
 
 export default function FilePreview({ share }: Props) {
+  if (share.isEncrypted) {
+    return (
+      <div className="preview-container password-box">
+        <h3>🔒 End-to-End Encrypted</h3>
+        <p>This file is encrypted client-side and cannot be decrypted by the browser.</p>
+        <p className="subtitle">Please use the Uplink CLI to download and decrypt this file.</p>
+      </div>
+    );
+  }
+
   const [password, setPassword] = useState("");
   const [authorized, setAuthorized] = useState(!share.passwordRequired);
   const [downloadUrl, setDownloadUrl] = useState("");
