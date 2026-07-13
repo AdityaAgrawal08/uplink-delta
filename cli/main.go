@@ -288,14 +288,30 @@ func handleSend(args []string) {
 	}
 
 	inputPath := strings.Trim(sendCmd.Arg(0), "\"'")
+
+	fi, err := os.Stat(inputPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("✗ Error: File not found.")
+			fmt.Println("Check that the path exists and that you have permission to access it.")
+		} else {
+			fmt.Printf("✗ Error: Accessing path failed: %v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	maxAllowedSize := int64(200 * 1024 * 1024)
+	if fi.IsDir() {
+		maxAllowedSize = int64(500 * 1024 * 1024)
+	}
+
+	if fi.Size() > maxAllowedSize {
+		fmt.Printf("✗ Error: Upload exceeds maximum size limit of %d MB.\n", maxAllowedSize/(1024*1024))
+		os.Exit(1)
+	}
 	
 	// Check queueing request
 	if *queueFlag {
-		fi, err := os.Stat(inputPath)
-		if err != nil {
-			fmt.Printf("✗ Error stating file for queue: %v\n", err)
-			os.Exit(1)
-		}
 		item := &QueueItem{
 			ID:        fmt.Sprintf("q_%d", time.Now().UnixNano()),
 			Path:      inputPath,
