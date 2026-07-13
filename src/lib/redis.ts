@@ -9,7 +9,7 @@ export interface IRedisClient {
 }
 
 class MockRedis implements IRedisClient {
-  private store: Map<string, { value: unknown; expiry: number | null }> = new Map();
+  private store: Map<string, { value: unknown; expiry: number | null; isObject: boolean }> = new Map();
 
   async get(key: string): Promise<unknown> {
     const item = this.store.get(key);
@@ -18,8 +18,7 @@ class MockRedis implements IRedisClient {
       this.store.delete(key);
       return null;
     }
-    // Return parsed JSON if it looks like serialized object
-    if (typeof item.value === "string") {
+    if (item.isObject && typeof item.value === "string") {
       try {
         return JSON.parse(item.value);
       } catch {
@@ -44,8 +43,9 @@ class MockRedis implements IRedisClient {
       expiry = Date.now() + options.px;
     }
 
-    const valueToStore = typeof value === "object" && value !== null ? JSON.stringify(value) : value;
-    this.store.set(key, { value: valueToStore, expiry });
+    const isObject = typeof value === "object" && value !== null;
+    const valueToStore = isObject ? JSON.stringify(value) : value;
+    this.store.set(key, { value: valueToStore, expiry, isObject });
     return "OK";
   }
 
@@ -61,7 +61,7 @@ class MockRedis implements IRedisClient {
       }
     }
     val += 1;
-    this.store.set(key, { value: String(val), expiry: item?.expiry || null });
+    this.store.set(key, { value: String(val), expiry: item?.expiry || null, isObject: false });
     return val;
   }
 

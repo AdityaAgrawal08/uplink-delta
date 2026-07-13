@@ -38,3 +38,16 @@ test("CRC64NVMe computations", () => {
   assert.strictEqual(typeof crc, "bigint");
   assert.strictEqual(b64, "eADAZNSoN4Q=");
 });
+
+test("MockRedis does not auto-parse strings resembling JSON", async () => {
+  const { redis } = await import("../src/lib/redis");
+  await redis.set("test:num_str", "12345");
+  const val = await redis.get("test:num_str");
+  assert.strictEqual(typeof val, "string");
+  assert.strictEqual(val, "12345");
+
+  await redis.set("test:obj", { a: 1 });
+  const valObj = await redis.get("test:obj");
+  assert.strictEqual(typeof valObj, "object");
+  assert.deepStrictEqual(valObj, { a: 1 });
+});

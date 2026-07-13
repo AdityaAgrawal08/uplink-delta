@@ -54,7 +54,13 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
       outputType: "encoded",
     });
 
-    return recomputed === hash;
+    const a = Buffer.from(recomputed);
+    const b = Buffer.from(hash);
+    if (a.length !== b.length) {
+      crypto.timingSafeEqual(a, a);
+      return false;
+    }
+    return crypto.timingSafeEqual(a, b);
   } catch (error) {
     console.error("Argon2id password verification failed:", error);
     return false;

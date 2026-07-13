@@ -4,3 +4,15 @@ body {
   color: #ccc;
   font-family: monospace;
 }
+
+.container {
+  padding: 2rem;
+  min-height: 100vh;
+}
+
+.code-block {
+  background-color: #222;
+  padding: 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+}

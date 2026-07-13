@@ -16,6 +16,16 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: "Missing key" }, { status: 400 });
     }
 
+    if (key.includes("..")) {
+      return NextResponse.json({ error: "Invalid key: path traversal attempt detected" }, { status: 400 });
+    }
+
+    const baseDir = path.resolve(process.cwd(), "uploads_dev");
+    const testPath = path.resolve(baseDir, key);
+    if (!testPath.startsWith(baseDir + path.sep)) {
+      return NextResponse.json({ error: "Access denied: invalid path key" }, { status: 400 });
+    }
+
     const arrayBuffer = await req.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 

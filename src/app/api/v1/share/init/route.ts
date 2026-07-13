@@ -8,6 +8,7 @@ import {
   generateShareId,
   sanitizeFilename,
   hashPassword,
+  anonymizeIp,
 } from "@/lib/crypto";
 import { reserveUploadQuota, releaseUploadQuota } from "@/lib/quota";
 import { apiError } from "@/lib/api-utils";
@@ -19,6 +20,18 @@ export async function POST(req: NextRequest) {
   let quotaReserved = false;
 
   try {
+    // Rate Limiting check
+    const clientIp = req.headers.get("x-forwarded-for") || "127.0.0.1";
+    const ipHash = anonymizeIp(clientIp);
+    const rateLimitKey = `rate:init:${ipHash}`;
+    const attempts = await redis.incr(rateLimitKey);
+    if (attempts === 1) {
+      await redis.expire(rateLimitKey, 300); // 5-minute window
+    }
+    if (attempts > 10) {
+      return apiError("Too many upload initialization requests. Locked out for 5 minutes.", 429);
+    }
+
     const text = await req.text();
     if (text.length > 1024 * 100) { // 100 KB max for init metadata
       return apiError("Request body too large", 413);
@@ -34,15 +47,21 @@ export async function POST(req: NextRequest) {
       downloadLimit,
       checksumCrc64nvme,
     } = body;
-    size = Number(body.size) || 0;
+    size = Number(body.size);
     partsCount = Number(body.partsCount) || 0;
 
     // 1. Basic Validations
     if (!filename || typeof filename !== "string") {
       return apiError("Filename is required", 400);
     }
-    if (size === undefined || typeof size !== "number" || size <= 0) {
-      return apiError("File size must be greater than 0", 400);
+    if (typeof size !== "number" || isNaN(size) || size <= 0 || !Number.isSafeInteger(size)) {
+      return apiError("File size must be a valid positive integer", 400);
+    }
+    if (typeof partsCount !== "number" || isNaN(partsCount) || partsCount < 0 || !Number.isSafeInteger(partsCount)) {
+      return apiError("partsCount must be a valid non-negative integer", 400);
+    }
+    if (partsCount > 100) {
+      return apiError("partsCount cannot exceed 100", 400);
     }
     if (!hashValue || typeof hashValue !== "string" || hashValue.length !== 64) {
       return apiError("Valid SHA-256 hashValue (64 chars hex) is required", 400);
@@ -172,7 +191,7 @@ export async function POST(req: NextRequest) {
     while (!isCodeUnique && codeAttempts < 10) {
       downloadCode = "";
       for (let i = 0; i < 10; i++) {
-        downloadCode += Math.floor(Math.random() * 10).toString();
+        downloadCode += crypto.randomInt(0, 10).toString();
       }
       const existingCode = await db.collection("shares").findOne({ downloadCode });
       if (!existingCode) {

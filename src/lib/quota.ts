@@ -146,6 +146,19 @@ export async function logQuotaEvent(type: QuotaEvent["type"], message: string): 
 
 // Reserve storage space and Class A operations for a new upload atomically
 export async function reserveUploadQuota(fileSize: number, estimatedClassAOps: number): Promise<boolean> {
+  if (
+    typeof fileSize !== "number" ||
+    isNaN(fileSize) ||
+    fileSize <= 0 ||
+    !Number.isSafeInteger(fileSize) ||
+    typeof estimatedClassAOps !== "number" ||
+    isNaN(estimatedClassAOps) ||
+    estimatedClassAOps <= 0 ||
+    !Number.isSafeInteger(estimatedClassAOps)
+  ) {
+    throw new Error("Invalid quota reservation parameters: must be positive safe integers");
+  }
+
   const db = await getDb();
   
   // Ensure resets are handled first
@@ -206,6 +219,10 @@ export async function reserveUploadQuota(fileSize: number, estimatedClassAOps: n
 
 // Commit the reserved storage size to actual storage bytes when upload is confirmed
 export async function commitUploadQuota(fileSize: number): Promise<void> {
+  if (typeof fileSize !== "number" || isNaN(fileSize) || fileSize <= 0 || !Number.isSafeInteger(fileSize)) {
+    throw new Error("Invalid commit parameters: fileSize must be a positive safe integer");
+  }
+
   const db = await getDb();
   const res = await db.collection<QuotaDoc>("quotas").findOneAndUpdate(
     { _id: "r2_quota" },
@@ -226,6 +243,19 @@ export async function commitUploadQuota(fileSize: number): Promise<void> {
 
 // Release/refund quota reservation if upload is cancelled, aborted, or expired
 export async function releaseUploadQuota(fileSize: number, estimatedClassAOps: number): Promise<void> {
+  if (
+    typeof fileSize !== "number" ||
+    isNaN(fileSize) ||
+    fileSize <= 0 ||
+    !Number.isSafeInteger(fileSize) ||
+    typeof estimatedClassAOps !== "number" ||
+    isNaN(estimatedClassAOps) ||
+    estimatedClassAOps <= 0 ||
+    !Number.isSafeInteger(estimatedClassAOps)
+  ) {
+    throw new Error("Invalid release parameters: must be positive safe integers");
+  }
+
   const db = await getDb();
   
   // Guard decrements below 0

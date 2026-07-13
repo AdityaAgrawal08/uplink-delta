@@ -95,6 +95,22 @@ export async function POST(
         return apiError("Parts list is required to complete multipart upload", 400);
       }
 
+      // Input Validation on parts array
+      const isValid = parts.every(
+        p =>
+          p &&
+          typeof p.partNumber === "number" &&
+          Number.isSafeInteger(p.partNumber) &&
+          p.partNumber > 0 &&
+          typeof p.etag === "string" &&
+          p.etag.length > 0
+      );
+      if (!isValid) {
+        const estimatedOps = uploadSession.partsCount + 2;
+        await releaseUploadQuota(share.size, estimatedOps);
+        return apiError("Invalid parts list structure. Each part must contain a valid partNumber and etag.", 400);
+      }
+
       // Assemble chunks in R2/S3 or mock storage
       const completionResult = await completeMultipartUpload(
         share.objectKey,

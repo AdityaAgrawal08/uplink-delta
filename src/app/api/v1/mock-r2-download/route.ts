@@ -14,7 +14,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Missing key" }, { status: 400 });
     }
 
-    const localPath = path.join(process.cwd(), "uploads_dev", key);
+    if (key.includes("..")) {
+      return NextResponse.json({ error: "Invalid key: path traversal attempt detected" }, { status: 400 });
+    }
+
+    const baseDir = path.resolve(process.cwd(), "uploads_dev");
+    const localPath = path.resolve(baseDir, key);
+    if (!localPath.startsWith(baseDir + path.sep)) {
+      return NextResponse.json({ error: "Access denied: invalid path key" }, { status: 400 });
+    }
+
     if (!fs.existsSync(localPath)) {
       return new Response("File Not Found", { status: 404 });
     }

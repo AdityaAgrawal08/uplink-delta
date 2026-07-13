@@ -34,7 +34,6 @@ export async function GET(
     // Return non-sensitive metadata only
     return NextResponse.json({
       shareId: share.shareId,
-      downloadCode: share.downloadCode || null,
       filename: share.filename,
       size: share.size,
       mimeType: share.mimeType,

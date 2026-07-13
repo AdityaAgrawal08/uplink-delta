@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"strconv"
 	"bytes"
 	"crypto/sha256"
@@ -13,6 +12,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +24,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/AdityaAgrawal08/uplink-delta/cli/pkg/crc64"
 	"github.com/AdityaAgrawal08/uplink-delta/cli/pkg/tarball"
+	"golang.org/x/term"
 )
 
 // ANSI stripping regex
@@ -356,10 +357,17 @@ func handleSend(args []string) {
 		filenameToSend = originalName + ".tar.gz"
 	}
 
+	mimeType := mime.TypeByExtension(filepath.Ext(filenameToSend))
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	hashBase64 := base64.StdEncoding.EncodeToString(hashBytes)
+
 	initReq := InitRequest{
 		Filename:         filenameToSend,
 		Size:             fileInfo.Size(),
-		MimeType:         "application/octet-stream",
+		MimeType:         mimeType,
 		HashValue:        hashHex,
 		Password:         *passwordFlag,
 		ExpiresInSeconds: expirySeconds,
@@ -440,7 +448,7 @@ func handleSend(args []string) {
 					fmt.Printf("\nError creating chunk request: %v\n", err)
 					os.Exit(1)
 				}
-				putReq.Header.Set("Content-Type", "application/octet-stream")
+				putReq.Header.Set("Content-Type", mimeType)
 				putReq.Header.Set("x-amz-checksum-crc64nvme", partChecksumBase64)
 				putReq.ContentLength = int64(n)
 
@@ -497,8 +505,8 @@ func handleSend(args []string) {
 		}
 
 		// SHA-256 header required for single-part
-		putReq.Header.Set("Content-Type", "application/octet-stream")
-		// putReq.Header.Set("x-amz-checksum-sha256", hashBase64)
+		putReq.Header.Set("Content-Type", mimeType)
+		putReq.Header.Set("x-amz-checksum-sha256", hashBase64)
 		putReq.ContentLength = fileInfo.Size()
 
 		uploadClient := &http.Client{Timeout: 30 * time.Minute}
@@ -664,13 +672,13 @@ func handleReceive(args []string) {
 	passwordToUse := *passwordFlag
 	if meta.PasswordRequired && passwordToUse == "" {
 		fmt.Print("This share is password-protected. Enter password: ")
-		reader := bufio.NewReader(os.Stdin)
-		pwd, err := reader.ReadString('\n')
+		pwdBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 		if err != nil {
-			fmt.Printf("Error reading password: %v\n", err)
+			fmt.Printf("\nError reading password: %v\n", err)
 			os.Exit(1)
 		}
-		passwordToUse = strings.TrimSpace(pwd)
+		fmt.Println()
+		passwordToUse = strings.TrimSpace(string(pwdBytes))
 	}
 
 	// 3. Authorize Download
