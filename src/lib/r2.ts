@@ -261,9 +261,9 @@ export async function completeMultipartUpload(
     try {
       const writeStream = fs.createWriteStream(localPath);
       
-      parts.sort((a, b) => a.partNumber - b.partNumber);
+      const sortedParts = [...parts].sort((a, b) => a.partNumber - b.partNumber);
 
-      for (const part of parts) {
+      for (const part of sortedParts) {
         const partPath = path.join(process.cwd(), "uploads_dev", `${objectKey}.part_${part.partNumber}`);
         if (!fs.existsSync(partPath)) {
           writeStream.end();

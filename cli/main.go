@@ -948,16 +948,15 @@ func (pp *ProgressPrinter) Print(read int64) {
 	transferredStr := fmt.Sprintf("%s / %s", formatBytes(read), formatBytes(pp.total))
 
 	if !pp.firstPrint {
-		fmt.Print("\033[5A")
+		// First print flag is just set to false
 	} else {
 		pp.firstPrint = false
 	}
 
-	fmt.Printf("\033[K%s\n", pp.title)
-	fmt.Printf("\033[K%s %d%%\n", barStr, percentInt)
-	fmt.Printf("\033[K%s\n", transferredStr)
-	fmt.Printf("\033[K%s\n", speedStr)
-	fmt.Printf("\033[KETA: %s\n", etaStr)
+	fmt.Printf("\r\033[K%s [%s] %d%% (%s) | %s | ETA: %s", pp.title, barStr, percentInt, transferredStr, speedStr, etaStr)
+	if read >= pp.total {
+		fmt.Println()
+	}
 }
 
 type ProgressReader struct {

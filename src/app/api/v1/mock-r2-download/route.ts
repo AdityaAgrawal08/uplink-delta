@@ -28,9 +28,17 @@ export async function GET(req: NextRequest) {
       return new Response("File Not Found", { status: 404 });
     }
 
+    const stat = fs.statSync(localPath);
+    const etag = `W/"${stat.size}-${stat.mtimeMs}"`;
+    const ifNoneMatch = req.headers.get("if-none-match");
+    if (ifNoneMatch === etag) {
+      return new Response(null, { status: 304 });
+    }
+
     const fileBuffer = fs.readFileSync(localPath);
 
     const headers = new Headers();
+    headers.set("ETag", etag);
     if (preview) {
       headers.set("Content-Type", mimeType);
       headers.set("Content-Disposition", "inline");

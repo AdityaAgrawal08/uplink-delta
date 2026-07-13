@@ -34,7 +34,10 @@ export async function PUT(req: NextRequest) {
 
     if (uploadId && partNumber) {
       // Multipart upload: Save part file
-      localPath = path.join(process.cwd(), "uploads_dev", `${key}.part_${partNumber}`);
+      localPath = path.resolve(baseDir, `${key}.part_${partNumber}`);
+      if (!localPath.startsWith(baseDir + path.sep)) {
+        return NextResponse.json({ error: "Access denied: invalid path key" }, { status: 400 });
+      }
       const dir = path.dirname(localPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -47,7 +50,7 @@ export async function PUT(req: NextRequest) {
       headers.set("ETag", `"${uploadId}-${partNumber}"`);
     } else {
       // Single-part upload
-      localPath = path.join(process.cwd(), "uploads_dev", key);
+      localPath = testPath;
       const dir = path.dirname(localPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
