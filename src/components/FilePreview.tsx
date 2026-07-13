@@ -35,6 +35,15 @@ function getPreviewType(mime: string, name: string): PreviewType {
 }
 
 export default function FilePreview({ share }: Props) {
+  const [password, setPassword] = useState("");
+  const [authorized, setAuthorized] = useState(!share.passwordRequired);
+  const [downloadUrl, setDownloadUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const [textContent, setTextContent] = useState<string | null>(null);
+  const [textLoading, setTextLoading] = useState(false);
+
   if (share.isEncrypted) {
     return (
       <div className="preview-container password-box">
@@ -44,15 +53,6 @@ export default function FilePreview({ share }: Props) {
       </div>
     );
   }
-
-  const [password, setPassword] = useState("");
-  const [authorized, setAuthorized] = useState(!share.passwordRequired);
-  const [downloadUrl, setDownloadUrl] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const [textContent, setTextContent] = useState<string | null>(null);
-  const [textLoading, setTextLoading] = useState(false);
 
   const previewType = getPreviewType(share.mimeType, share.filename);
 

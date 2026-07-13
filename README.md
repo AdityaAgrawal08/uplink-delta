@@ -1,36 +1,120 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Uplink-Delta 🚀
 
-## Getting Started
+Uplink-Delta is a resilient, offline-first, client-side encrypted file-sharing platform designed for both direct P2P transfers (LAN & WAN) and secure cloud-mediated sharing.
 
-First, run the development server:
+Built with a **Go stdlib-first** philosophy, the CLI client performs zero-buffering streaming uploads, NAT hole-punching, and client-side encryption, matching a glassmorphic **Next.js** web interface with CDN-powered inline file previews.
 
+---
+
+## Key Features
+
+### 1. Peer-to-Peer Transfers (LAN & WAN)
+* **Direct LAN Mode**: Share files directly over local networks. Uses mDNS service discovery with hashed share codes (`sha256(code)[:8]`) to prevent sniffing, serving files over ephemeral TLS using on-the-fly self-signed certificates.
+* **WAN Mode via DHT**: Connects NAT-isolated peers using `go-libp2p` and Kademlia DHT content routing. Performs direct UDP hole-punching over QUIC connections.
+* **Secure Transfers**: Enforces transfer integrity checks using streaming SHA-256 verification and implements strict access passwords and download limits.
+
+### 2. Resiliency & Offline Queue
+* **Offline Queue**: When the network is unavailable, uploads are automatically queued under `~/.uplink/queue/`. A background polling worker monitors reachability and retries uploads.
+* **Resumable Transfers**: Preserves exact chunk ETags and CRC64NVMe checksums from S3/R2 multipart uploads, allowing interrupted uploads or downloads to resume exactly where they left off.
+
+### 3. Zero-Knowledge Security
+* **End-to-End Encryption (E2EE)**: Files can be encrypted client-side using 256-bit AES-GCM in 64 KB chunks before upload.
+* **Key Preservation**: The decryption key is appended to the download code (`<code>:<keyHex>`) and is never sent to the server.
+* **Web Notice**: The browser preview page detects E2EE files and displays a warning, directing the recipient to decrypt using the CLI client.
+
+### 4. Interactive Previews & Automation
+* **Rich Web Previews**: Glassmorphic web previews for image, video, audio, text, PDF, and source code files with CDN-loaded `highlight.js` syntax highlighting.
+* **Watch Directory Mode**: Monitor local directories using `fsnotify`. Automatically uploads new or modified files with a 500ms write-debouncing filter.
+* **Shell Completions**: Generates autocomplete helpers for Bash, Zsh, and Fish environments.
+
+---
+
+## CLI Usage
+
+### Uploading Files & Directories
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# Standard upload
+uplink send report.pdf
+
+# Upload folder (automatically packages to tarball)
+uplink send ./documents
+
+# Upload with client-side encryption
+uplink send invoice.xlsx --encrypt
+
+# Start direct LAN P2P transfer
+uplink send video.mp4 --lan
+
+# Queue upload locally (useful when offline)
+uplink send backup.tar.gz --queue
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Downloading Assets
+```bash
+# Standard download
+uplink receive 4827165038
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+# Download E2EE encrypted assets (auto-decrypts using local key)
+uplink receive 4827165038:7c4a8d8e9...
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+# Download directly over LAN
+uplink receive 4827165038 --lan
+```
 
-## Learn More
+### Managing the Offline Queue
+```bash
+# List all queued items
+uplink queue
 
-To learn more about Next.js, take a look at the following resources:
+# Pause / Resume / Cancel a queued item
+uplink queue pause <id>
+uplink queue resume <id>
+uplink queue cancel <id>
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Clear completed or failed queue tasks
+uplink queue clear
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Automation & Watch Mode
+```bash
+# Watch a directory and auto-upload any additions/changes
+uplink watch /path/to/sync/folder
 
-## Deploy on Vercel
+# Generate shell auto-completions
+uplink completion zsh > ~/.zsh/completion/_uplink
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+---
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Development Setup
+
+### Next.js Web Application
+```bash
+# Install package dependencies
+npm install
+
+# Start local Next.js dev server
+npm run dev
+
+# Run ESLint validation checks
+npm run lint
+
+# Compile production bundle
+npm run build
+```
+
+### Go CLI Client
+```bash
+# Compile CLI binary
+cd cli
+go build -o build/uplink
+
+# Run CLI unit test suites
+go test ./...
+```
+
+### Database Testing
+```bash
+# Execute local mock database tests
+npx tsx scratch/run_tests.ts
+```
