@@ -74,7 +74,6 @@ export async function getPresignedUploadUrl(
     Bucket: getBucketName(),
     Key: objectKey,
     ContentType: mimeType,
-    ChecksumSHA256: base64Hash,
   });
 
   return getSignedUrl(s3Client, command, { expiresIn: expiresInSeconds });
@@ -218,7 +217,6 @@ export async function getPresignedMultipartUrls(
     const createCommand = new CreateMultipartUploadCommand({
       Bucket: getBucketName(),
       Key: objectKey,
-      ChecksumAlgorithm: "CRC64NVME",
     });
     const createResponse = await s3Client.send(createCommand);
     uploadId = createResponse.UploadId!;
@@ -231,7 +229,6 @@ export async function getPresignedMultipartUrls(
       Key: objectKey,
       UploadId: uploadId,
       PartNumber: i,
-      ChecksumAlgorithm: "CRC64NVME",
     });
     const url = await getSignedUrl(s3Client, partCommand, { expiresIn: 7200 });
     urls.push(url);
@@ -303,7 +300,6 @@ export async function completeMultipartUpload(
         Parts: parts.map(p => ({
           PartNumber: p.partNumber,
           ETag: p.etag,
-          ChecksumCRC64NVME: p.checksum,
         })),
       },
     });

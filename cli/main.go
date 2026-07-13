@@ -502,7 +502,6 @@ func performCloudUploadWrapper(inputPath string, password string, expirySeconds 
 
 	hashBytes := shaHasher.Sum(nil)
 	hashHex := hex.EncodeToString(hashBytes)
-	hashBase64 := base64.StdEncoding.EncodeToString(hashBytes)
 
 	var crcBase64 string
 	if isMultipart {
@@ -764,7 +763,6 @@ func performCloudUploadWrapper(inputPath string, password string, expirySeconds 
 					return "", "", "", 0, err
 				}
 				putReq.Header.Set("Content-Type", mimeType)
-				putReq.Header.Set("x-amz-checksum-crc64nvme", partChecksumBase64)
 				putReq.ContentLength = int64(n)
 
 				uploadClient := &http.Client{Timeout: 10 * time.Minute}
@@ -823,7 +821,6 @@ func performCloudUploadWrapper(inputPath string, password string, expirySeconds 
 		}
 
 		putReq.Header.Set("Content-Type", mimeType)
-		putReq.Header.Set("x-amz-checksum-sha256", hashBase64)
 		putReq.ContentLength = fileInfo.Size()
 
 		uploadClient := &http.Client{Timeout: 30 * time.Minute}
