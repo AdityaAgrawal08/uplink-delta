@@ -64,8 +64,9 @@ export default function FilePreview({ share }: Props) {
 
       setDownloadUrl(data.downloadUrl);
       setAuthorized(true);
-    } catch (err: any) {
-      setError(err.message || "Invalid password");
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setError(errMsg || "Invalid password");
     } finally {
       setLoading(false);
     }
@@ -92,8 +93,9 @@ export default function FilePreview({ share }: Props) {
       if (!fileRes.ok) throw new Error("Failed to fetch file content");
       const text = await fileRes.text();
       setTextContent(text.slice(0, 100000)); // Cap at 100 KB
-    } catch (err: any) {
-      setError(err.message || "Failed to load text preview");
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setError(errMsg || "Failed to load text preview");
     } finally {
       setTextLoading(false);
     }
@@ -168,6 +170,7 @@ export default function FilePreview({ share }: Props) {
 
         {previewType === "image" && downloadUrl && (
           <div className="media-preview-box">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={downloadUrl} alt={share.filename} loading="lazy" className="img-preview" />
           </div>
         )}

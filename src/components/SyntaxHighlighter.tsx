@@ -16,6 +16,11 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#039;");
 }
 
+interface Hljs {
+  highlight: (code: string, options: { language: string }) => { value: string };
+  highlightAuto: (code: string) => { value: string };
+}
+
 export default function SyntaxHighlighter({ code, language }: Props) {
   const [html, setHtml] = useState<string>("<pre><code>" + escapeHtml(code) + "</code></pre>");
 
@@ -32,7 +37,7 @@ export default function SyntaxHighlighter({ code, language }: Props) {
     let script = document.getElementById(scriptId) as HTMLScriptElement;
     
     const highlight = () => {
-      const hljs = (window as any).hljs;
+      const hljs = (window as unknown as { hljs?: Hljs }).hljs;
       if (hljs) {
         try {
           const result = hljs.highlight(code, { language });
@@ -50,7 +55,7 @@ export default function SyntaxHighlighter({ code, language }: Props) {
       script.src = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js";
       script.onload = highlight;
       document.head.appendChild(script);
-    } else if ((window as any).hljs) {
+    } else if ((window as unknown as { hljs?: Hljs }).hljs) {
       highlight();
     } else {
       script.addEventListener("load", highlight);
