@@ -4,6 +4,12 @@ Uplink-Delta is a resilient, offline-first, client-side encrypted file-sharing p
 
 Built with a **Go stdlib-first** philosophy, the CLI client performs zero-buffering streaming uploads, NAT hole-punching, and client-side encryption, matching a glassmorphic **Next.js** web interface with CDN-powered inline file previews.
 
+> [!NOTE]
+> **Latest Release: v3.1.0**
+> * **Mobile-Optimized Web App**: Fast CORS-free text previews, pre-fetched download links, and native browser downloads.
+> * **Micro QR Codes**: Compact 64px Web QR codes and 75% smaller terminal QR printouts.
+> * **Cloudflare R2 Compatibility**: Resolved S3-specific signature mismatches with size-matching validation fallbacks.
+
 ---
 
 ## Key Features
