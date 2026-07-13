@@ -117,23 +117,16 @@ export default function FilePreview({ share }: Props) {
     setTextLoading(true);
     setError("");
     try {
-      let url = downloadUrl;
-      if (!url) {
-        const res = await fetch(`/api/v1/share/${share.shareId}/authorize-download`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to get download URL");
-        url = data.downloadUrl;
-        setDownloadUrl(url);
+      const res = await fetch(`/api/v1/share/${share.shareId}/preview-text`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to load text preview");
       }
-
-      const fileRes = await fetch(url);
-      if (!fileRes.ok) throw new Error("Failed to fetch file content");
-      const text = await fileRes.text();
-      setTextContent(text.slice(0, 100000)); // Cap at 100 KB
+      setTextContent(data.text);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       setError(errMsg || "Failed to load text preview");
@@ -159,15 +152,37 @@ export default function FilePreview({ share }: Props) {
     return "";
   };
 
-  const handleDownload = async () => {
-    setLoading(true);
-    const url = await ensureDownloadUrl();
-    setLoading(false);
-    if (url) {
-      window.location.href = url;
-    } else {
-      setError("Failed to retrieve file download link.");
+  useEffect(() => {
+    if (authorized && !downloadUrl) {
+      ensureDownloadUrl();
     }
+  }, [authorized, downloadUrl]);
+
+  const handleDownload = () => {
+    if (downloadUrl) {
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = share.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+
+    setLoading(true);
+    ensureDownloadUrl().then((url) => {
+      setLoading(false);
+      if (url) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = share.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        setError("Failed to retrieve file download link.");
+      }
+    });
   };
 
   const handleShare = async () => {
@@ -244,9 +259,7 @@ export default function FilePreview({ share }: Props) {
     );
   }
 
-  if (!downloadUrl && ["image", "video", "audio", "pdf"].includes(previewType)) {
-    ensureDownloadUrl();
-  }
+
 
   return (
     <div className="share-card-layout">

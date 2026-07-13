@@ -311,3 +311,27 @@ export async function completeMultipartUpload(
     return { error: errMsg };
   }
 }
+
+export async function getObjectText(objectKey: string): Promise<string> {
+  if (!s3Client) {
+    const localPath = path.join(process.cwd(), "uploads_dev", objectKey);
+    if (fs.existsSync(localPath)) {
+      return fs.readFileSync(localPath, "utf-8");
+    }
+    return "";
+  }
+
+  try {
+    const command = new GetObjectCommand({
+      Bucket: getBucketName(),
+      Key: objectKey,
+    });
+    const response = await s3Client.send(command);
+    if (response.Body) {
+      return await response.Body.transformToString();
+    }
+  } catch (err) {
+    console.error("Failed to fetch object content for preview:", err);
+  }
+  return "";
+}
