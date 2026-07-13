@@ -1,23 +1,25 @@
 package main
 
 import (
-	"strconv"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"hash"
 	"io"
+	"math/rand"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,13 +27,10 @@ import (
 	"github.com/AdityaAgrawal08/uplink-delta/cli/pkg/crc64"
 	"github.com/AdityaAgrawal08/uplink-delta/cli/pkg/tarball"
 	"golang.org/x/term"
+	"github.com/AdityaAgrawal08/uplink-delta/cli/lan"
 )
 
-// ANSI stripping regex
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-
-// Chunk threshold for multipart (10 MB)
-const ChunkSize = 10 * 1024 * 1024
 
 type InitRequest struct {
 	Filename          string `json:"filename"`
@@ -106,6 +105,11 @@ func main() {
 		handleSend(os.Args[2:])
 	case "receive":
 		handleReceive(os.Args[2:])
+	case "config":
+		handleConfigSubcommand(os.Args[2:])
+	case "clean":
+		CleanOldResumeStates()
+		fmt.Println("Cleared old resume states.")
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -129,6 +133,12 @@ func printUsage() {
 	
 	fmt.Println("  receive     Download a file or directory")
 	fmt.Println("              uplink receive 4827165038\n")
+
+	fmt.Println("  config      Manage client configuration options")
+	fmt.Println("              uplink config\n")
+
+	fmt.Println("  clean       Clean expired upload resume states")
+	fmt.Println("              uplink clean\n")
 	
 	fmt.Println("  help        Show available commands")
 	fmt.Println("              uplink --help")
@@ -207,11 +217,26 @@ func parseDurationToSeconds(durationStr string) (int, error) {
 	}
 }
 
+func generateShareCode() string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	b := make([]byte, 6)
+	for i := range b {
+		b[i] = charset[r.Intn(len(charset))]
+	}
+	return string(b)
+}
+
 func handleSend(args []string) {
+	cfg := LoadConfig()
+
 	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
 	passwordFlag := sendCmd.String("password", "", "Password to protect the share link")
-	expireFlag := sendCmd.String("expire", "5m", "Expiration duration (e.g. 5m, 30m, 2h, 1d)")
-	serverFlag := sendCmd.String("server", getServerDefault(), "Server base URL")
+	expireFlag := sendCmd.String("expire", cfg.Expiry, "Expiration duration (e.g. 5m, 30m, 2h, 1d)")
+	serverFlag := sendCmd.String("server", cfg.Server, "Server base URL")
+	lanFlag := sendCmd.Bool("lan", false, "Enable direct LAN P2P transfer")
+	qrFlag := sendCmd.Bool("qr", false, "Force display QR code")
+	noQrFlag := sendCmd.Bool("no-qr", false, "Suppress QR code display")
 
 	err := sendCmd.Parse(args)
 	if err != nil {
@@ -254,7 +279,6 @@ func handleSend(args []string) {
 		isDirectory = true
 		fmt.Printf("Detected directory. Packaging '%s' to tarball...\n", originalName)
 
-		// Create temporary file
 		tempFile, err := os.CreateTemp("", "uplink_tarball_*.tar.gz")
 		if err != nil {
 			fmt.Printf("Error creating temp tarball: %v\n", err)
@@ -264,7 +288,6 @@ func handleSend(args []string) {
 		filePath = tempFile.Name()
 		defer os.Remove(filePath) // Ensure cleanup on exit
 
-		// Open write descriptor
 		outFd, err := os.OpenFile(filePath, os.O_WRONLY, 0o600)
 		if err != nil {
 			fmt.Printf("Error opening temp tarball for writing: %v\n", err)
@@ -278,7 +301,6 @@ func handleSend(args []string) {
 			os.Exit(1)
 		}
 
-		// Re-stat the temporary archive file
 		fileInfo, err = os.Stat(filePath)
 		if err != nil {
 			fmt.Printf("Error stating archive: %v\n", err)
@@ -307,19 +329,29 @@ func handleSend(args []string) {
 	}
 	defer file.Close()
 
-	isMultipart := fileInfo.Size() > ChunkSize
-	partsCount := 1
-	if isMultipart {
-		partsCount = int((fileInfo.Size() + ChunkSize - 1) / ChunkSize)
-	}
-
-	// Pass 1: Compute hashes (SHA-256 and CRC64NVME if multipart)
+	// 1. Analyze file integrity (Pass 1/2)
 	fmt.Print("Analyzing file integrity (Pass 1/2)... ")
 	shaHasher := sha256.New()
 	var crcHasher hash.Hash64
 	var multiWriter io.Writer
 
+	// S3 5MB minimum limit is used for ChunkSize
+	const MinS3PartSize = 5 * 1024 * 1024
+	var chunkSize int64 = 10 * 1024 * 1024
+	serverUrl := sanitizeServerUrl(*serverFlag)
+
+	if cfg.AdaptiveChunks {
+		chunker := &AdaptiveChunker{}
+		_, err = chunker.Measure(serverUrl)
+		if err == nil {
+			chunkSize = chunker.ChunkSize()
+		}
+	}
+
+	isMultipart := fileInfo.Size() > chunkSize
+	partsCount := 1
 	if isMultipart {
+		partsCount = int((fileInfo.Size() + chunkSize - 1) / chunkSize)
 		crcHasher = crc64.New()
 		multiWriter = io.MultiWriter(shaHasher, crcHasher)
 	} else {
@@ -334,6 +366,7 @@ func handleSend(args []string) {
 
 	hashBytes := shaHasher.Sum(nil)
 	hashHex := hex.EncodeToString(hashBytes)
+	hashBase64 := base64.StdEncoding.EncodeToString(hashBytes)
 
 	var crcBase64 string
 	if isMultipart {
@@ -350,79 +383,223 @@ func handleSend(args []string) {
 		os.Exit(1)
 	}
 
-	// 2. Call /api/v1/share/init
-	fmt.Print("Initializing upload session... ")
-	filenameToSend := originalName
-	if isDirectory {
-		filenameToSend = originalName + ".tar.gz"
+	// 2. LAN P2P Transfer mode
+	if *lanFlag {
+		cert, fingerprint, err := lan.GenerateEphemeralCert()
+		if err != nil {
+			fmt.Printf("✗ Error generating ephemeral certificate: %v\n", err)
+			os.Exit(1)
+		}
+
+		port := cfg.LanPort
+		var listener net.Listener
+		var listenErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			addr := fmt.Sprintf(":%d", port+attempt)
+			listener, listenErr = net.Listen("tcp", addr)
+			if listenErr == nil {
+				port = port + attempt
+				listener.Close()
+				break
+			}
+		}
+		if listenErr != nil {
+			fmt.Printf("✗ Error starting LAN server: could not bind ports %d-%d\n", cfg.LanPort, cfg.LanPort+2)
+			os.Exit(1)
+		}
+
+		shareCode := generateShareCode()
+
+		fmt.Printf("\n✓ Direct LAN P2P Transfer Initialized!\n")
+		fmt.Printf("Share Code: %s\n", shareCode)
+		fmt.Printf("Fingerprint: %s\n", fingerprint)
+		
+		shareUrl := fmt.Sprintf("uplink receive %s --lan", shareCode)
+		showQR := false
+		if *qrFlag {
+			showQR = true
+		} else if !*noQrFlag {
+			showQR = ShouldShowQR(cfg.ShowQR)
+		}
+		if showQR {
+			PrintQRCode(shareUrl)
+		}
+
+		fmt.Printf("Serving file on port %d... Waiting 1s for local peer...\n", port)
+
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "uplink-peer"
+		}
+		serviceInfo := lan.ServiceInfo{
+			Hostname:    hostname,
+			Port:        port,
+			ShareCode:   shareCode,
+			FileName:    originalName,
+			Size:        fileInfo.Size(),
+			Fingerprint: fingerprint,
+		}
+		shutdownMDNS, err := lan.RegisterService(serviceInfo)
+		if err != nil {
+			fmt.Printf("Error registering mDNS service: %v\n", err)
+			os.Exit(1)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		serverDone := make(chan struct{})
+		go func() {
+			err := lan.ServeFileLAN(ctx, filePath, port, cert, func() {
+				fmt.Println("\n✓ LAN Transfer completed successfully!")
+				cancel()
+				os.Exit(0)
+			})
+			if err != nil && err != context.Canceled {
+				fmt.Printf("\n✗ LAN Server Error: %v\n", err)
+			}
+			close(serverDone)
+		}()
+
+		time.Sleep(1 * time.Second)
+
+		if lan.GetActiveConnections() > 0 {
+			fmt.Println("Local peer connected! Performing LAN transfer...")
+			<-ctx.Done()
+			shutdownMDNS()
+			os.Exit(0)
+		} else {
+			fmt.Println("No peer connected on LAN yet. Proceeding with fallback upload to cloud...")
+			defer func() {
+				cancel()
+				shutdownMDNS()
+			}()
+		}
 	}
 
-	mimeType := mime.TypeByExtension(filepath.Ext(filenameToSend))
+	// 3. Resumable Upload check
+	var resumeState *ResumeState
+	var isResume bool
+	stateFilename := sanitizeFilename(originalName) + ".json"
+
+	if isMultipart {
+		state, err := LoadResumeState(stateFilename)
+		if err == nil && state.Valid() && state.SHA256 == hashHex && state.FileSize == fileInfo.Size() {
+			partsUrl := fmt.Sprintf("%s/api/v1/share/%s/parts", serverUrl, state.ShareId)
+			partsResp, err := http.Get(partsUrl)
+			if err == nil && partsResp.StatusCode == 200 {
+				var partsData struct {
+					UploadId string     `json:"uploadId"`
+					Parts    []PartInfo `json:"parts"`
+				}
+				if json.NewDecoder(partsResp.Body).Decode(&partsData) == nil {
+					serverPartsMap := make(map[int]bool)
+					for _, p := range partsData.Parts {
+						serverPartsMap[p.PartNumber] = true
+					}
+					for _, p := range state.Done {
+						serverPartsMap[p] = true
+					}
+					
+					var mergedParts []int
+					for p := range serverPartsMap {
+						mergedParts = append(mergedParts, p)
+					}
+					
+					resumeState = state
+					resumeState.Done = mergedParts
+					isResume = true
+					fmt.Printf("Resuming upload session %s (%d/%d parts completed)...\n", state.ShareId, len(mergedParts), state.TotalParts)
+				}
+			}
+			if partsResp != nil {
+				partsResp.Body.Close()
+			}
+		}
+	}
+
+	// 4. Initialize upload in Cloud
+	var initResp InitResponse
+	mimeType := mime.TypeByExtension(filepath.Ext(originalName))
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
 
-	hashBase64 := base64.StdEncoding.EncodeToString(hashBytes)
+	if isResume {
+		initResp.ShareId = resumeState.ShareId
+		initResp.UploadId = resumeState.UploadId
+		initResp.UploadUrls = resumeState.UploadUrls
+	} else {
+		fmt.Print("Initializing upload (Pass 2/2)... ")
+		initReq := InitRequest{
+			Filename:         originalName,
+			Size:             fileInfo.Size(),
+			MimeType:         mimeType,
+			HashValue:        hashHex,
+			Password:         *passwordFlag,
+			ExpiresInSeconds: expirySeconds,
+			PartsCount:       partsCount,
+		}
 
-	initReq := InitRequest{
-		Filename:         filenameToSend,
-		Size:             fileInfo.Size(),
-		MimeType:         mimeType,
-		HashValue:        hashHex,
-		Password:         *passwordFlag,
-		ExpiresInSeconds: expirySeconds,
+		if isMultipart {
+			initReq.ChecksumCrc64nvme = crcBase64
+		}
+
+		jsonBytes, err := json.Marshal(initReq)
+		if err != nil {
+			fmt.Printf("Error encoding request: %v\n", err)
+			os.Exit(1)
+		}
+
+		initUrl := fmt.Sprintf("%s/api/v1/share/init", serverUrl)
+		req, err := http.NewRequest("POST", initUrl, bytes.NewBuffer(jsonBytes))
+		if err != nil {
+			fmt.Printf("Error creating request: %v\n", err)
+			os.Exit(1)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", fmt.Sprintf("cli_%d_%s", time.Now().UnixNano(), hashHex[:8]))
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Printf("Network error: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != 201 {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			fmt.Printf("Failed (status %d): %s\n", resp.StatusCode, string(bodyBytes))
+			os.Exit(1)
+		}
+
+		err = json.NewDecoder(resp.Body).Decode(&initResp)
+		if err != nil {
+			fmt.Printf("Error parsing response: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Done.")
+
+		if isMultipart {
+			resumeState = &ResumeState{
+				ShareId:    initResp.ShareId,
+				UploadId:   initResp.UploadId,
+				UploadUrls: initResp.UploadUrls,
+				FileSize:   fileInfo.Size(),
+				SHA256:     hashHex,
+				Done:       []int{},
+				TotalParts: partsCount,
+				Timestamp:  time.Now().Format(time.RFC3339),
+			}
+			_ = resumeState.Save(stateFilename)
+		}
 	}
 
-	if isMultipart {
-		initReq.PartsCount = partsCount
-		initReq.ChecksumCrc64nvme = crcBase64
-	}
-
-	jsonBytes, err := json.Marshal(initReq)
-	if err != nil {
-		fmt.Printf("Error encoding request: %v\n", err)
-		os.Exit(1)
-	}
-
-	serverUrl := sanitizeServerUrl(*serverFlag)
-	initUrl := fmt.Sprintf("%s/api/v1/share/init", serverUrl)
-
-	req, err := http.NewRequest("POST", initUrl, bytes.NewBuffer(jsonBytes))
-	if err != nil {
-		fmt.Printf("Error creating request: %v\n", err)
-		os.Exit(1)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", fmt.Sprintf("cli_%d_%s", time.Now().UnixNano(), hashHex[:8]))
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Printf("Network error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 201 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		fmt.Printf("Failed (status %d): %s\n", resp.StatusCode, string(bodyBytes))
-		os.Exit(1)
-	}
-
-	var initResp InitResponse
-	err = json.NewDecoder(resp.Body).Decode(&initResp)
-	if err != nil {
-		fmt.Printf("Error parsing response: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("Done.")
-
-	// 3. Streaming upload (Single-part vs Multipart)
+	// 5. Streaming upload (Single-part vs Multipart)
 	var confirmReq ConfirmRequest
 
 	if isMultipart {
 		confirmReq.Parts = make([]PartInfo, partsCount)
-		buffer := make([]byte, ChunkSize)
+		buffer := make([]byte, chunkSize)
 		totalUploaded := int64(0)
 		printer := &ProgressPrinter{
 			title:      "Uploading...",
@@ -432,15 +609,38 @@ func handleSend(args []string) {
 		}
 
 		for i := 1; i <= partsCount; i++ {
+			// Read chunk size
 			n, readErr := file.Read(buffer)
 			if n > 0 {
 				chunk := buffer[:n]
 
-				// Compute part checksum
+				// Check if already completed (from resumeState)
+				alreadyDone := false
+				if resumeState != nil {
+					for _, d := range resumeState.Done {
+						if d == i {
+							alreadyDone = true
+							break
+						}
+					}
+				}
+
 				partHasher := crc64.New()
 				partHasher.Write(chunk)
 				partChecksumBytes := partHasher.Sum(nil)
 				partChecksumBase64 := base64.StdEncoding.EncodeToString(partChecksumBytes)
+				etag := fmt.Sprintf("\"%s-%d\"", initResp.UploadId, i)
+
+				if alreadyDone {
+					totalUploaded += int64(n)
+					printer.Print(totalUploaded)
+					confirmReq.Parts[i-1] = PartInfo{
+						PartNumber: i,
+						ETag:       etag,
+						Checksum:   partChecksumBase64,
+					}
+					continue
+				}
 
 				partUploadUrl := initResp.UploadUrls[i-1]
 				putReq, err := http.NewRequest("PUT", partUploadUrl, bytes.NewReader(chunk))
@@ -467,9 +667,9 @@ func handleSend(args []string) {
 				}
 				putResp.Body.Close()
 
-				etag := putResp.Header.Get("ETag")
-				if etag == "" {
-					etag = fmt.Sprintf("\"%s-%d\"", initResp.UploadId, i) // Fallback ETag format
+				retEtag := putResp.Header.Get("ETag")
+				if retEtag != "" {
+					etag = retEtag
 				}
 
 				confirmReq.Parts[i-1] = PartInfo{
@@ -480,6 +680,12 @@ func handleSend(args []string) {
 
 				totalUploaded += int64(n)
 				printer.Print(totalUploaded)
+
+				// Save progress to state file
+				if resumeState != nil {
+					resumeState.Done = append(resumeState.Done, i)
+					_ = resumeState.Save(stateFilename)
+				}
 			}
 			if readErr != nil && readErr != io.EOF {
 				fmt.Printf("\nError reading file: %v\n", readErr)
@@ -504,7 +710,6 @@ func handleSend(args []string) {
 			os.Exit(1)
 		}
 
-		// SHA-256 header required for single-part
 		putReq.Header.Set("Content-Type", mimeType)
 		putReq.Header.Set("x-amz-checksum-sha256", hashBase64)
 		putReq.ContentLength = fileInfo.Size()
@@ -525,7 +730,7 @@ func handleSend(args []string) {
 		fmt.Println()
 	}
 
-	// 4. Confirm upload
+	// 6. Confirm upload
 	confirmUrl := fmt.Sprintf("%s/api/v1/share/%s/confirm", serverUrl, initResp.ShareId)
 
 	var confirmBody io.Reader = nil
@@ -534,6 +739,7 @@ func handleSend(args []string) {
 		confirmBody = bytes.NewBuffer(cBytes)
 	}
 
+	client := &http.Client{Timeout: 30 * time.Second}
 	confirmReqObj, err := http.NewRequest("POST", confirmUrl, confirmBody)
 	if err != nil {
 		fmt.Printf("Error creating confirm request: %v\n", err)
@@ -564,6 +770,11 @@ func handleSend(args []string) {
 		_ = clipboard.WriteAll(confirmData.DownloadCode)
 	}
 
+	// Cleanup upload resume state file
+	if isMultipart {
+		_ = DeleteResumeState(stateFilename)
+	}
+
 	shareLink := fmt.Sprintf("%s/share/%s", serverUrl, confirmData.ShareId)
 	
 	fmt.Printf("\n✓ Upload completed\n\n")
@@ -574,9 +785,22 @@ func handleSend(args []string) {
 	fmt.Printf("Link:\n%s\n\n", cleanPrintName(shareLink))
 	fmt.Printf("Expires:\n%s\n\n", *expireFlag)
 	fmt.Printf("Size:\n%s\n", formatBytes(fileInfo.Size()))
+
+	// Display QR code on completion
+	showQR := false
+	if *qrFlag {
+		showQR = true
+	} else if !*noQrFlag {
+		showQR = ShouldShowQR(cfg.ShowQR)
+	}
+	if showQR {
+		PrintQRCode(shareLink)
+	}
 }
 
 func handleReceive(args []string) {
+	cfg := LoadConfig()
+
 	recvCmd := flag.NewFlagSet("receive", flag.ExitOnError)
 	forceFlag := recvCmd.Bool("force", false, "Force overwrite if file/directory exists")
 	forceShortFlag := recvCmd.Bool("f", false, "Force overwrite (shortcut)")
@@ -585,6 +809,7 @@ func handleReceive(args []string) {
 	passwordFlag := recvCmd.String("password", "", "Decryption password if protected")
 	mkdirFlag := recvCmd.Bool("mkdir", false, "Create destination directory if it doesn't exist")
 	mkdirShortFlag := recvCmd.Bool("p", false, "Create destination directory (shortcut)")
+	lanFlag := recvCmd.Bool("lan", false, "Enable direct LAN P2P transfer")
 
 	err := recvCmd.Parse(args)
 	if err != nil {
@@ -605,12 +830,12 @@ func handleReceive(args []string) {
 	}
 
 	shareId := shareInput
-	serverUrl := getServerDefault()
+	serverUrl := cfg.Server
 
 	isShortCode, _ := regexp.MatchString(`^\d{10}$`, shareInput)
 	if isShortCode {
 		shareId = shareInput
-		serverUrl = getServerDefault()
+		serverUrl = cfg.Server
 	} else if strings.Contains(shareInput, "/share/") {
 		u, err := url.Parse(shareInput)
 		if err == nil {
@@ -630,14 +855,113 @@ func handleReceive(args []string) {
 		serverUrl = host
 	} else {
 		shareId = shareInput
-		serverUrl = getServerDefault()
+		serverUrl = cfg.Server
 	}
 
 	serverUrl = sanitizeServerUrl(serverUrl)
 
+	// LAN Peer discovery check
+	if *lanFlag {
+		fmt.Printf("Scanning LAN for mDNS service with share code %s...\n", shareId)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		addr, filename, size, fingerprint, mdnsErr := lan.DiscoverService(ctx, shareId)
+		cancel()
+
+		if mdnsErr == nil {
+			fmt.Printf("Peer found on LAN at %s!\n", addr)
+			fmt.Printf("File: %s (%s)\n", filename, formatBytes(size))
+			fmt.Printf("Fingerprint: %s\n", fingerprint)
+
+			// Resolve local output destination path
+			sanitizedName := sanitizeFilename(filename)
+			outputFilepath := sanitizedName
+			var finalExtractDir string
+			isArchive := strings.HasSuffix(filename, ".tar.gz")
+
+			if isArchive {
+				originalDirName := sanitizedName[:len(sanitizedName)-len(".tar.gz")]
+				outputFilepath = originalDirName
+				finalExtractDir = originalDirName
+			}
+
+			if destPath != "" {
+				destFileInfo, statErr := os.Stat(destPath)
+				if statErr == nil && destFileInfo.IsDir() {
+					if isArchive {
+						originalDirName := sanitizedName[:len(sanitizedName)-len(".tar.gz")]
+						finalExtractDir = filepath.Join(destPath, originalDirName)
+						outputFilepath = finalExtractDir
+					} else {
+						outputFilepath = filepath.Join(destPath, sanitizedName)
+					}
+				} else {
+					parentDir := filepath.Dir(destPath)
+					if _, pErr := os.Stat(parentDir); os.IsNotExist(pErr) {
+						if *mkdirFlag || *mkdirShortFlag {
+							err = os.MkdirAll(parentDir, 0o755)
+							if err != nil {
+								fmt.Printf("Error creating directory %s: %v\n", parentDir, err)
+								os.Exit(1)
+							}
+						} else {
+							fmt.Printf("Error: Destination folder %s does not exist. Use --mkdir or -p flag to create it.\n", parentDir)
+							os.Exit(1)
+						}
+					}
+					outputFilepath = destPath
+					finalExtractDir = destPath
+				}
+			}
+
+			tempTarFile := outputFilepath
+			if isArchive {
+				tempTarFile = outputFilepath + ".download.tar.gz"
+			}
+
+			fmt.Printf("Downloading directly from local peer over HTTPS...\n")
+			printer := &ProgressPrinter{
+				title:      "Downloading (LAN)...",
+				total:      size,
+				startTime:  time.Now(),
+				firstPrint: true,
+			}
+
+			lanUrl := fmt.Sprintf("https://%s", addr)
+			err = lan.DownloadFileLAN(lanUrl, tempTarFile, 0, fingerprint, func(written int64) {
+				printer.Print(written)
+			})
+
+			if err == nil {
+				if isArchive {
+					tarReader, err := os.Open(tempTarFile)
+					if err != nil {
+						fmt.Printf("✗ Error: Opening download archive failed: %v\n", err)
+						os.Remove(tempTarFile)
+						os.Exit(1)
+					}
+					err = tarball.Unpack(tarReader, finalExtractDir)
+					tarReader.Close()
+					os.Remove(tempTarFile)
+					if err != nil {
+						fmt.Printf("✗ Error: Extraction failed: %v\n", err)
+						os.Exit(1)
+					}
+					fmt.Printf("\n✓ LAN Download completed & extracted to %s!\n", finalExtractDir)
+				} else {
+					fmt.Printf("\n✓ LAN Download completed successfully!\nDestination: %s\n", outputFilepath)
+				}
+				os.Exit(0)
+			} else {
+				fmt.Printf("\n✗ LAN Transfer failed: %v\n", err)
+			}
+		}
+
+		fmt.Println("No peer found on LAN. Falling back to cloud download...")
+	}
+
 	client := &http.Client{Timeout: 15 * time.Second}
 
-	// 1. Fetch metadata
+	// Fetch metadata from Cloud
 	metaUrl := fmt.Sprintf("%s/api/v1/share/%s", serverUrl, shareId)
 	resp, err := client.Get(metaUrl)
 	if err != nil {
@@ -666,9 +990,7 @@ func handleReceive(args []string) {
 	isArchive := strings.HasSuffix(meta.Filename, ".tar.gz")
 	cleanFilename := cleanPrintName(meta.Filename)
 
-	// Details parsed successfully
-
-	// 2. Password prompter
+	// Password prompter
 	passwordToUse := *passwordFlag
 	if meta.PasswordRequired && passwordToUse == "" {
 		fmt.Print("This share is password-protected. Enter password: ")
@@ -681,7 +1003,7 @@ func handleReceive(args []string) {
 		passwordToUse = strings.TrimSpace(string(pwdBytes))
 	}
 
-	// 3. Authorize Download
+	// Authorize Download
 	authReq := AuthorizeRequest{
 		Password: passwordToUse,
 		Preview:  false,
@@ -718,7 +1040,6 @@ func handleReceive(args []string) {
 		fmt.Printf("Error parsing auth details: %v\n", err)
 		os.Exit(1)
 	}
-	// Authorized successfully
 
 	// Determine output path
 	sanitizedName := sanitizeFilename(meta.Filename)
@@ -726,7 +1047,6 @@ func handleReceive(args []string) {
 	var finalExtractDir string
 
 	if isArchive {
-		// Target folder name without .tar.gz
 		originalDirName := sanitizedName[:len(sanitizedName)-len(".tar.gz")]
 		outputFilepath = originalDirName
 		finalExtractDir = originalDirName
@@ -803,34 +1123,22 @@ func handleReceive(args []string) {
 		}
 	}
 
-	// 4. Download file
 	tempTarFile := absOut
 	if isArchive {
-		// Download directory archive as a temp tarball file
 		tempTarFile = absOut + ".download.tar.gz"
 	}
 
-	downloadResp, err := http.Get(authData.DownloadUrl)
-	if err != nil {
-		fmt.Printf("✗ Error: Downloading file failed: %v\n", err)
-		os.Exit(1)
-	}
-	defer downloadResp.Body.Close()
-
-	if downloadResp.StatusCode != 200 {
-		bodyBytes, _ := io.ReadAll(downloadResp.Body)
-		fmt.Printf("✗ Error: Download failed (status %d): %s\n", downloadResp.StatusCode, string(bodyBytes))
-		os.Exit(1)
-	}
-
-	outFd, err := os.OpenFile(tempTarFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		if os.IsPermission(err) {
-			fmt.Println("✗ Error: Permission denied writing to destination.")
-		} else {
-			fmt.Printf("✗ Error: Creating output file failed: %v\n", err)
+	// Probe range support
+	rangeSupported := false
+	probeReq, err := http.NewRequest("HEAD", authData.DownloadUrl, nil)
+	if err == nil {
+		probeResp, err := client.Do(probeReq)
+		if err == nil {
+			defer probeResp.Body.Close()
+			if probeResp.Header.Get("Accept-Ranges") == "bytes" {
+				rangeSupported = true
+			}
 		}
-		os.Exit(1)
 	}
 
 	printer := &ProgressPrinter{
@@ -839,31 +1147,54 @@ func handleReceive(args []string) {
 		startTime:  time.Now(),
 		firstPrint: true,
 	}
-	progDownload := &ProgressReader{
-		reader:  downloadResp.Body,
-		printer: printer,
+
+	if rangeSupported {
+		err = DownloadResumable(authData.DownloadUrl, tempTarFile, meta.HashValue, func(written int64) {
+			printer.Print(written)
+		})
+	} else {
+		downloadResp, err := http.Get(authData.DownloadUrl)
+		if err != nil {
+			fmt.Printf("✗ Error: Downloading file failed: %v\n", err)
+			os.Exit(1)
+		}
+		defer downloadResp.Body.Close()
+
+		if downloadResp.StatusCode != 200 {
+			bodyBytes, _ := io.ReadAll(downloadResp.Body)
+			fmt.Printf("✗ Error: Download failed (status %d): %s\n", downloadResp.StatusCode, string(bodyBytes))
+			os.Exit(1)
+		}
+
+		outFd, err := os.OpenFile(tempTarFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			fmt.Printf("✗ Error: Creating output file failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		progDownload := &ProgressReader{
+			reader:  downloadResp.Body,
+			printer: printer,
+		}
+
+		downloadHasher := sha256.New()
+		multiWriter := io.MultiWriter(outFd, downloadHasher)
+		_, err = io.Copy(multiWriter, progDownload)
+		outFd.Close()
+
+		if err == nil {
+			computedHex := hex.EncodeToString(downloadHasher.Sum(nil))
+			if computedHex != meta.HashValue {
+				fmt.Println("\n✗ Error: File integrity check failed!")
+				os.Remove(tempTarFile)
+				os.Exit(1)
+			}
+		}
 	}
 
-	downloadHasher := sha256.New()
-	multiWriter := io.MultiWriter(outFd, downloadHasher)
-
-	_, err = io.Copy(multiWriter, progDownload)
-	outFd.Close() // Close immediately
 	if err != nil {
 		os.Remove(tempTarFile)
-		if errors.Is(err, io.ErrShortWrite) {
-			fmt.Println("\n✗ Error: Write failed. Disk space may be exhausted.")
-		} else {
-			fmt.Printf("\n✗ Error: Download interrupted: %v\n", err)
-		}
-		os.Exit(1)
-	}
-
-	computedHex := hex.EncodeToString(downloadHasher.Sum(nil))
-
-	if computedHex != meta.HashValue {
-		fmt.Println("\n✗ Error: File integrity check failed! Computed checksum does not match expected hash.")
-		os.Remove(tempTarFile)
+		fmt.Printf("\n✗ Error: Download interrupted: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -878,7 +1209,7 @@ func handleReceive(args []string) {
 
 		err = tarball.Unpack(tarReader, finalExtractDir)
 		tarReader.Close()
-		os.Remove(tempTarFile) // Clean up temporary download file
+		os.Remove(tempTarFile)
 
 		if err != nil {
 			fmt.Printf("✗ Error: Extraction failed: %v\n", err)
@@ -948,7 +1279,7 @@ func (pp *ProgressPrinter) Print(read int64) {
 	transferredStr := fmt.Sprintf("%s / %s", formatBytes(read), formatBytes(pp.total))
 
 	if !pp.firstPrint {
-		// First print flag is just set to false
+		// print formatting is handled via carriage return
 	} else {
 		pp.firstPrint = false
 	}
