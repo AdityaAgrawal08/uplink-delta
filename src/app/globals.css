@@ -283,15 +283,15 @@ p {
 
 .qr-container {
   background: #ffffff;
-  padding: 6px;
-  border-radius: 8px;
+  padding: 4px;
+  border-radius: 6px;
   display: flex;
   justify-content: center;
   align-items: center;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
   transition: transform 0.2s;
-  width: 96px;
-  height: 96px;
+  width: 64px;
+  height: 64px;
 }
 
 .qr-container:hover {

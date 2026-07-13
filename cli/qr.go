@@ -23,9 +23,9 @@ func ShouldShowQR(configShowQR string) bool {
 		return false
 	}
 
-	// 2. Terminal width must be >= 50
+	// 2. Terminal width must be >= 80 to prevent wrapping and distortion
 	width, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || width < 50 {
+	if err != nil || width < 80 {
 		return false
 	}
 
@@ -39,21 +39,8 @@ func ShouldShowQR(configShowQR string) bool {
 }
 
 func PrintQRCode(url string) {
-	width, _, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil {
-		width = 80
-	}
-
-	// Custom version selection for smaller terminals
-	var qr *qrcode.QRCode
-	if width >= 30 && width < 50 {
-		qr, err = qrcode.NewWithForcedVersion(url, 3, qrcode.Low)
-	} else if width < 30 {
-		qr, err = qrcode.NewWithForcedVersion(url, 1, qrcode.Low)
-	} else {
-		qr, err = qrcode.New(url, qrcode.Low)
-	}
-
+	// Always use the dynamic minimal size chosen by the library for low recovery level
+	qr, err := qrcode.New(url, qrcode.Low)
 	if err != nil {
 		fmt.Printf("Error creating QR code: %v\n", err)
 		return

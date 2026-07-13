@@ -275,7 +275,7 @@ export default function FilePreview({ share }: Props) {
           <div className="qr-container-wrapper">
             <div className="qr-container">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={qrUrl} alt="Scan to share" width={96} height={96} className="qr-image" />
+              <img src={qrUrl} alt="Scan to share" width={64} height={64} className="qr-image" />
             </div>
             <span className="qr-caption">Scan to Share</span>
           </div>
