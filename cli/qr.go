@@ -47,11 +47,11 @@ func PrintQRCode(url string) {
 	// Custom version selection for smaller terminals
 	var qr *qrcode.QRCode
 	if width >= 30 && width < 50 {
-		qr, err = qrcode.NewWithForcedVersion(url, 3, qrcode.Medium)
+		qr, err = qrcode.NewWithForcedVersion(url, 3, qrcode.Low)
 	} else if width < 30 {
-		qr, err = qrcode.NewWithForcedVersion(url, 1, qrcode.Medium)
+		qr, err = qrcode.NewWithForcedVersion(url, 1, qrcode.Low)
 	} else {
-		qr, err = qrcode.New(url, qrcode.Medium)
+		qr, err = qrcode.New(url, qrcode.Low)
 	}
 
 	if err != nil {
