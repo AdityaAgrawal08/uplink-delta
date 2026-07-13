@@ -1,3 +1,4 @@
+import { getPresignedDownloadUrl } from "@/lib/r2";
 import { getDb } from "@/lib/mongodb";
 import FilePreview from "@/components/FilePreview";
 import { notFound } from "next/navigation";
@@ -15,6 +16,21 @@ export default async function SharePage(props: { params: Promise<{ id: string }>
     notFound();
   }
 
+  let serverDownloadUrl = "";
+  if (!share.passwordHash) {
+    try {
+      serverDownloadUrl = await getPresignedDownloadUrl(
+        share.objectKey,
+        600, // 10 minutes expiry
+        share.storageFilename,
+        share.mimeType,
+        false
+      );
+    } catch (e) {
+      console.error("Failed to pre-generate download URL:", e);
+    }
+  }
+
   const shareMeta = {
     shareId: share.shareId,
     filename: share.filename,
@@ -25,6 +41,7 @@ export default async function SharePage(props: { params: Promise<{ id: string }>
     isEncrypted: !!share.isEncrypted,
     createdAt: share.createdAt ? new Date(share.createdAt).toISOString() : null,
     expiresAt: share.expiresAt ? new Date(share.expiresAt).toISOString() : null,
+    downloadUrl: serverDownloadUrl,
   };
 
   return (

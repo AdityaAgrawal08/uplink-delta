@@ -14,6 +14,7 @@ interface ShareMetadata {
   isEncrypted?: boolean;
   createdAt: string | null;
   expiresAt: string | null;
+  downloadUrl?: string;
 }
 
 interface Props {
@@ -40,7 +41,7 @@ function getPreviewType(mime: string, name: string): PreviewType {
 export default function FilePreview({ share }: Props) {
   const [password, setPassword] = useState("");
   const [authorized, setAuthorized] = useState(!share.passwordRequired);
-  const [downloadUrl, setDownloadUrl] = useState("");
+  const [downloadUrl, setDownloadUrl] = useState(share.downloadUrl || "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -152,11 +153,6 @@ export default function FilePreview({ share }: Props) {
     return "";
   };
 
-  useEffect(() => {
-    if (authorized && !downloadUrl) {
-      ensureDownloadUrl();
-    }
-  }, [authorized, downloadUrl]);
 
   const handleDownload = () => {
     if (downloadUrl) {
