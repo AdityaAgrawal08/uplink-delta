@@ -5,7 +5,7 @@ Uplink-Delta is a resilient, offline-first, client-side encrypted file-sharing p
 Built with a **Go stdlib-first** philosophy, the CLI client performs zero-buffering streaming uploads, NAT hole-punching, and client-side encryption, matching a glassmorphic **Next.js** web interface with CDN-powered inline file previews.
 
 > [!NOTE]
-> **Latest Release: v3.1.1**
+> **Latest Release: v3.1.2**
 > * **Critical E2EE Overflow Fix**: Resolved a 2-byte chunk size limit overflow issue by adjusting the chunk limit to 65,519 bytes, permitting decryption of files larger than 64KB.
 > * **Accurate Directory Size Checks**: Replaced the directory metadata size check with a recursive size calculation of all files inside the directory before uploading or queueing.
 > * **Atomic LAN Share Limits**: Enforced atomic compare-and-swap checks for LAN download limits to resolve race conditions under concurrent client downloads.
