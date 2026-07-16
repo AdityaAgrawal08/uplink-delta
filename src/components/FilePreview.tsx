@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import QRCode from "qrcode";
 import SyntaxHighlighter from "./SyntaxHighlighter";
 
@@ -67,11 +67,29 @@ export default function FilePreview({ share }: Props) {
     }
   }, []);
 
+  const ensureDownloadUrl = useCallback(async () => {
+    if (downloadUrl) return downloadUrl;
+    try {
+      const res = await fetch(`/api/v1/share/${share.shareId}/authorize-download`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setDownloadUrl(data.downloadUrl);
+        return data.downloadUrl;
+      }
+    } catch {}
+    return "";
+  }, [downloadUrl, share.shareId, password]);
+
   useEffect(() => {
     if (authorized && !downloadUrl && previewType !== "other" && previewType !== "text") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       ensureDownloadUrl();
     }
-  }, [authorized, downloadUrl, previewType]);
+  }, [authorized, downloadUrl, previewType, ensureDownloadUrl]);
 
   const formatDate = (isoString: string | null) => {
     if (!isoString) return "N/A";
@@ -142,22 +160,6 @@ export default function FilePreview({ share }: Props) {
     }
   };
 
-  const ensureDownloadUrl = async () => {
-    if (downloadUrl) return downloadUrl;
-    try {
-      const res = await fetch(`/api/v1/share/${share.shareId}/authorize-download`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setDownloadUrl(data.downloadUrl);
-        return data.downloadUrl;
-      }
-    } catch {}
-    return "";
-  };
 
 
   const handleDownload = () => {

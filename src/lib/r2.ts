@@ -347,7 +347,7 @@ export async function calculateS3ObjectHash(objectKey: string): Promise<string> 
     Key: objectKey,
   });
   const response = await s3Client.send(command);
-  const stream = response.Body as any;
+  const stream = response.Body as unknown as AsyncIterable<Buffer | Uint8Array>;
   if (!stream) throw new Error("Failed to get object body stream");
 
   const hash = crypto.createHash("sha256");

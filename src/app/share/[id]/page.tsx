@@ -1,4 +1,3 @@
-import { getPresignedDownloadUrl } from "@/lib/r2";
 import { getDb } from "@/lib/mongodb";
 import FilePreview from "@/components/FilePreview";
 import { notFound } from "next/navigation";
