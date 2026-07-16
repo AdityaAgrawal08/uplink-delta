@@ -35,7 +35,7 @@ jobs:
       - name: Build Binary
         run: |
           cd cli
-          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -o uplink -ldflags="-s -w" main.go
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -o uplink -ldflags="-s -w"
 
       - name: Archive Binary
         run: |

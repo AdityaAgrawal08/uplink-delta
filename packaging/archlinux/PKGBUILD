@@ -26,7 +26,7 @@ pkgver() {
 build() {
   cd "uplink-delta/cli"
   export CGO_ENABLED=0
-  go build -o uplink -ldflags="-s -w" main.go
+  go build -o uplink -ldflags="-s -w"
 }
 
 package() {
