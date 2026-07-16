@@ -261,9 +261,9 @@ export async function POST(req: NextRequest) {
       uploadExpiresAt: uploadExpiresAt.toISOString(),
     };
 
-    // Cache final response in Redis with a 24h TTL if idempotency key is used
+    // Cache final response in Redis with a TTL matching presigned URL expiration (2h) if idempotency key is used
     if (redisIdempotencyKey) {
-      await redis.set(redisIdempotencyKey, responseData, { ex: 86400 });
+      await redis.set(redisIdempotencyKey, responseData, { ex: uploadUrlExpiry });
     }
 
     // Trigger background cleanup asynchronously to purge any expired uploads

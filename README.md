@@ -5,10 +5,11 @@ Uplink-Delta is a resilient, offline-first, client-side encrypted file-sharing p
 Built with a **Go stdlib-first** philosophy, the CLI client performs zero-buffering streaming uploads, NAT hole-punching, and client-side encryption, matching a glassmorphic **Next.js** web interface with CDN-powered inline file previews.
 
 > [!NOTE]
-> **Latest Release: v3.1.0**
-> * **Mobile-Optimized Web App**: Fast CORS-free text previews, pre-fetched download links, and native browser downloads.
-> * **Micro QR Codes**: Compact 64px Web QR codes and 75% smaller terminal QR printouts.
-> * **Cloudflare R2 Compatibility**: Resolved S3-specific signature mismatches with size-matching validation fallbacks.
+> **Latest Release: v3.1.1**
+> * **Critical E2EE Overflow Fix**: Resolved a 2-byte chunk size limit overflow issue by adjusting the chunk limit to 65,519 bytes, permitting decryption of files larger than 64KB.
+> * **Accurate Directory Size Checks**: Replaced the directory metadata size check with a recursive size calculation of all files inside the directory before uploading or queueing.
+> * **Atomic LAN Share Limits**: Enforced atomic compare-and-swap checks for LAN download limits to resolve race conditions under concurrent client downloads.
+> * **Idempotency Cache Correction**: Aligned Next.js API idempotency key expiration with the 2-hour presigned URL duration to prevent expired presigned URLs from being cached and reused.
 
 ---
 
@@ -20,11 +21,11 @@ Built with a **Go stdlib-first** philosophy, the CLI client performs zero-buffer
 * **Secure Transfers**: Enforces transfer integrity checks using streaming SHA-256 verification and implements strict access passwords and download limits.
 
 ### 2. Resiliency & Offline Queue
-* **Offline Queue**: When the network is unavailable, uploads are automatically queued under `~/.uplink/queue/`. A background polling worker monitors reachability and retries uploads.
 * **Resumable Transfers**: Preserves exact chunk ETags and CRC64NVMe checksums from S3/R2 multipart uploads, allowing interrupted uploads or downloads to resume exactly where they left off.
+* **Offline Queue**: When the network is unavailable, uploads are automatically queued under `~/.uplink/queue/`. A background polling worker monitors reachability and retries uploads.
 
 ### 3. Zero-Knowledge Security
-* **End-to-End Encryption (E2EE)**: Files can be encrypted client-side using 256-bit AES-GCM in 64 KB chunks before upload.
+* **End-to-End Encryption (E2EE)**: Files can be encrypted client-side using 256-bit AES-GCM in ~64 KB chunks (65,519 bytes) before upload.
 * **Key Preservation**: The decryption key is appended to the download code (`<code>:<keyHex>`) and is never sent to the server.
 * **Web Notice**: The browser preview page detects E2EE files and displays a warning, directing the recipient to decrypt using the CLI client.
 

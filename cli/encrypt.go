@@ -11,7 +11,7 @@ import (
 	"os"
 )
 
-const ChunkSizeLimit = 64 * 1024 // 64 KB chunks
+const ChunkSizeLimit = 65519 // Chunk size limit to ensure ciphertext (with 16-byte tag) fits in 16-bit length prefix (65519 + 16 = 65535)
 
 func EncryptFileStream(srcPath, dstPath string) (string, error) {
 	key := make([]byte, 32)

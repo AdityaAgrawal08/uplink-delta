@@ -301,11 +301,20 @@ func handleSend(args []string) {
 	}
 
 	maxAllowedSize := int64(200 * 1024 * 1024)
+	var sizeToCheck int64
 	if fi.IsDir() {
 		maxAllowedSize = int64(500 * 1024 * 1024)
+		var sizeErr error
+		sizeToCheck, sizeErr = getDirSize(inputPath)
+		if sizeErr != nil {
+			fmt.Printf("✗ Error calculating directory size: %v\n", sizeErr)
+			os.Exit(1)
+		}
+	} else {
+		sizeToCheck = fi.Size()
 	}
 
-	if fi.Size() > maxAllowedSize {
+	if sizeToCheck > maxAllowedSize {
 		fmt.Printf("✗ Error: Upload exceeds maximum size limit of %d MB.\n", maxAllowedSize/(1024*1024))
 		os.Exit(1)
 	}
@@ -316,7 +325,7 @@ func handleSend(args []string) {
 			ID:        fmt.Sprintf("q_%d", time.Now().UnixNano()),
 			Path:      inputPath,
 			Filename:  fi.Name(),
-			Size:      fi.Size(),
+			Size:      sizeToCheck,
 			Status:    "pending",
 			MaxRetries: 5,
 			CreatedAt: time.Now(),
@@ -344,29 +353,25 @@ func handleSend(args []string) {
 	if err != nil {
 		// Offline-first grace fallback: queue upload
 		fmt.Printf("\n[Offline Fallback] Server is unreachable or upload failed: %v\n", err)
-		fi, statErr := os.Stat(inputPath)
-		if statErr == nil {
-			item := &QueueItem{
-				ID:        fmt.Sprintf("q_%d", time.Now().UnixNano()),
-				Path:      inputPath,
-				Filename:  fi.Name(),
-				Size:      fi.Size(),
-				Status:    "pending",
-				MaxRetries: 5,
-				CreatedAt: time.Now(),
-				Flags: SendFlags{
-					Password: *passwordFlag,
-					Expire:   *expireFlag,
-					Server:   *serverFlag,
-					Lan:      *lanFlag,
-					Encrypt:  *encryptFlag,
-				},
-			}
-			_ = saveQueueItem(item)
-			fmt.Printf("✓ Queued upload for automatic retry when network becomes available (ID: %s)\n", item.ID)
-			os.Exit(0)
+		item := &QueueItem{
+			ID:        fmt.Sprintf("q_%d", time.Now().UnixNano()),
+			Path:      inputPath,
+			Filename:  fi.Name(),
+			Size:      sizeToCheck,
+			Status:    "pending",
+			MaxRetries: 5,
+			CreatedAt: time.Now(),
+			Flags: SendFlags{
+				Password: *passwordFlag,
+				Expire:   *expireFlag,
+				Server:   *serverFlag,
+				Lan:      *lanFlag,
+				Encrypt:  *encryptFlag,
+			},
 		}
-		os.Exit(1)
+		_ = saveQueueItem(item)
+		fmt.Printf("✓ Queued upload for automatic retry when network becomes available (ID: %s)\n", item.ID)
+		os.Exit(0)
 	}
 
 	fmt.Printf("\n✓ Upload completed\n\n")
@@ -1464,4 +1469,18 @@ func (pr *ProgressReader) Read(p []byte) (int, error) {
 		pr.printer.Print(pr.read)
 	}
 	return n, err
+}
+
+func getDirSize(path string) (int64, error) {
+	var size int64
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
 }

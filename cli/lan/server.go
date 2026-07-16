@@ -57,18 +57,28 @@ func ServeFileLAN(ctx context.Context, path string, port int, cert tls.Certifica
 		}
 
 		// 3. Enforce download limits
-		if downloadLimit > 0 {
-			completed := atomic.LoadInt32(&DownloadsCompleted)
-			if int(completed) >= downloadLimit {
-				w.WriteHeader(http.StatusGone)
-				w.Write([]byte("Gone: download limit exceeded"))
-				return
+		var reserved bool
+		if downloadLimit > 0 && r.Method == "GET" {
+			for {
+				completed := atomic.LoadInt32(&DownloadsCompleted)
+				if int(completed) >= downloadLimit {
+					w.WriteHeader(http.StatusGone)
+					w.Write([]byte("Gone: download limit exceeded"))
+					return
+				}
+				if atomic.CompareAndSwapInt32(&DownloadsCompleted, completed, completed+1) {
+					reserved = true
+					break
+				}
 			}
 		}
 
 		// 4. Validate file state changes (mtime)
 		currentInfo, err := os.Stat(path)
 		if err != nil || currentInfo.ModTime().Unix() != info.ModTime().Unix() || currentInfo.Size() != info.Size() {
+			if reserved {
+				atomic.AddInt32(&DownloadsCompleted, -1)
+			}
 			w.WriteHeader(http.StatusConflict)
 			w.Write([]byte("Conflict: file modified since server start"))
 			return
@@ -82,14 +92,19 @@ func ServeFileLAN(ctx context.Context, path string, port int, cert tls.Certifica
 
 		// Serve completed, run completion callback
 		if r.Method == "GET" {
-			atomic.AddInt32(&DownloadsCompleted, 1)
-			go func() {
-				completeOnce.Do(func() {
-					if onComplete != nil {
-						onComplete()
-					}
-				})
-			}()
+			if r.Context().Err() != nil {
+				if reserved {
+					atomic.AddInt32(&DownloadsCompleted, -1)
+				}
+			} else {
+				go func() {
+					completeOnce.Do(func() {
+						if onComplete != nil {
+							onComplete()
+						}
+					})
+				}()
+			}
 		}
 	})
 
