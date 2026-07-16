@@ -21,6 +21,10 @@ const bucketName = process.env.R2_BUCKET_NAME;
 
 export let s3Client: S3Client | null = null;
 
+export function isMockStorage(): boolean {
+  return !s3Client || process.env.FORCE_MOCK_STORAGE === "true";
+}
+
 const isPlaceholder = (val: string | undefined) => {
   if (!val) return true;
   return /<.*>|_here|placeholder|example|your_|xxxx|test_/i.test(val);
@@ -62,7 +66,7 @@ export async function getPresignedUploadUrl(
   mimeType: string,
   hashValue: string // SHA-256
 ): Promise<string> {
-  if (!s3Client) {
+  if (!s3Client || process.env.FORCE_MOCK_STORAGE === "true") {
     // Local dev mock route
     return `${process.env.APP_URL || "http://localhost:3000"}/api/v1/mock-r2-upload?key=${encodeURIComponent(objectKey)}&sha256=${encodeURIComponent(hashValue)}&mimeType=${encodeURIComponent(mimeType)}`;
   }
@@ -83,7 +87,7 @@ export async function getPresignedDownloadUrl(
   mimeType: string,
   preview: boolean
 ): Promise<string> {
-  if (!s3Client) {
+  if (!s3Client || process.env.FORCE_MOCK_STORAGE === "true") {
     // Local dev mock route
     return `${process.env.APP_URL || "http://localhost:3000"}/api/v1/mock-r2-download?key=${encodeURIComponent(objectKey)}&preview=${preview}&filename=${encodeURIComponent(storageFilename)}&mimeType=${encodeURIComponent(mimeType)}`;
   }
@@ -114,7 +118,7 @@ export interface ObjectDetails {
 }
 
 export async function checkObjectExists(objectKey: string): Promise<ObjectDetails> {
-  if (!s3Client) {
+  if (!s3Client || process.env.FORCE_MOCK_STORAGE === "true") {
     // Mock local dev file check
     const localPath = path.join(process.cwd(), "uploads_dev", objectKey);
     if (fs.existsSync(localPath)) {
@@ -163,7 +167,7 @@ export async function checkObjectExists(objectKey: string): Promise<ObjectDetail
 }
 
 export async function deleteObject(objectKey: string): Promise<boolean> {
-  if (!s3Client) {
+  if (!s3Client || process.env.FORCE_MOCK_STORAGE === "true") {
     const localPath = path.join(process.cwd(), "uploads_dev", objectKey);
     try {
       if (fs.existsSync(localPath)) {
@@ -198,7 +202,7 @@ export async function getPresignedMultipartUrls(
   partsCount: number,
   uploadIdFromReq: string | null = null
 ): Promise<{ uploadId: string; urls: string[] }> {
-  if (!s3Client) {
+  if (!s3Client || process.env.FORCE_MOCK_STORAGE === "true") {
     const uploadId = uploadIdFromReq || `mock_upload_${crypto.randomUUID().replace(/-/g, "")}`;
     const urls = [];
     for (let i = 1; i <= partsCount; i++) {
@@ -313,7 +317,7 @@ export async function completeMultipartUpload(
 }
 
 export async function getObjectText(objectKey: string): Promise<string> {
-  if (!s3Client) {
+  if (!s3Client || process.env.FORCE_MOCK_STORAGE === "true") {
     const localPath = path.join(process.cwd(), "uploads_dev", objectKey);
     if (fs.existsSync(localPath)) {
       return fs.readFileSync(localPath, "utf-8");
@@ -334,4 +338,21 @@ export async function getObjectText(objectKey: string): Promise<string> {
     console.error("Failed to fetch object content for preview:", err);
   }
   return "";
+}
+
+export async function calculateS3ObjectHash(objectKey: string): Promise<string> {
+  if (!s3Client) throw new Error("S3 client not initialized");
+  const command = new GetObjectCommand({
+    Bucket: getBucketName(),
+    Key: objectKey,
+  });
+  const response = await s3Client.send(command);
+  const stream = response.Body as any;
+  if (!stream) throw new Error("Failed to get object body stream");
+
+  const hash = crypto.createHash("sha256");
+  for await (const chunk of stream) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -34,9 +35,12 @@ type QueueItem struct {
 }
 
 type QueueWorker struct {
-	mu      sync.Mutex
-	running bool
-	done    chan struct{}
+	mu         sync.Mutex
+	running    bool
+	processing bool
+	done       chan struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 var globalWorker = &QueueWorker{
@@ -113,6 +117,10 @@ func (qw *QueueWorker) Start(interval time.Duration) {
 		return
 	}
 	qw.running = true
+	qw.done = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	qw.ctx = ctx
+	qw.cancel = cancel
 	qw.mu.Unlock()
 
 	go func() {
@@ -133,6 +141,9 @@ func (qw *QueueWorker) Stop() {
 	qw.mu.Lock()
 	defer qw.mu.Unlock()
 	if qw.running {
+		if qw.cancel != nil {
+			qw.cancel()
+		}
 		close(qw.done)
 		qw.running = false
 	}
@@ -140,7 +151,19 @@ func (qw *QueueWorker) Stop() {
 
 func (qw *QueueWorker) processQueue() {
 	qw.mu.Lock()
-	defer qw.mu.Unlock()
+	if !qw.running || qw.processing {
+		qw.mu.Unlock()
+		return
+	}
+	qw.processing = true
+	ctx := qw.ctx
+	qw.mu.Unlock()
+
+	defer func() {
+		qw.mu.Lock()
+		qw.processing = false
+		qw.mu.Unlock()
+	}()
 
 	items, err := loadQueueItems()
 	if err != nil {
@@ -148,6 +171,10 @@ func (qw *QueueWorker) processQueue() {
 	}
 
 	for _, item := range items {
+		if ctx != nil && ctx.Err() != nil {
+			return
+		}
+
 		if item.Status != "pending" || item.Retries >= item.MaxRetries {
 			continue
 		}
@@ -174,7 +201,7 @@ func (qw *QueueWorker) processQueue() {
 		// Setup file uploading arguments
 		// We execute the upload file operation
 		// Re-uses handleSendUpload logic
-		err = performQueueUpload(&item)
+		err = performQueueUpload(ctx, &item)
 		if err != nil {
 			item.Retries++
 			item.Status = "pending"

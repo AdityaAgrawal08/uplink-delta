@@ -67,6 +67,12 @@ export default function FilePreview({ share }: Props) {
     }
   }, []);
 
+  useEffect(() => {
+    if (authorized && !downloadUrl && previewType !== "other" && previewType !== "text") {
+      ensureDownloadUrl();
+    }
+  }, [authorized, downloadUrl, previewType]);
+
   const formatDate = (isoString: string | null) => {
     if (!isoString) return "N/A";
     const date = new Date(isoString);

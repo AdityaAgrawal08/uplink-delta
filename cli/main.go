@@ -11,7 +11,8 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"math/rand"
+	"crypto/rand"
+	"math/big"
 	"mime"
 	"net"
 	"net/http"
@@ -248,10 +249,13 @@ func parseDurationToSeconds(durationStr string) (int, error) {
 
 func generateShareCode() string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	b := make([]byte, 6)
 	for i := range b {
-		b[i] = charset[r.Intn(len(charset))]
+		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			panic(err)
+		}
+		b[i] = charset[num.Int64()]
 	}
 	return string(b)
 }
@@ -349,7 +353,7 @@ func handleSend(args []string) {
 	serverUrl := sanitizeServerUrl(*serverFlag)
 
 	// Perform actual upload with fallback to queue if offline
-	code, shareLink, filename, size, err := performCloudUploadWrapper(inputPath, *passwordFlag, expirySeconds, serverUrl, *encryptFlag, *lanFlag, *qrFlag, *noQrFlag)
+	code, shareLink, filename, size, err := performCloudUploadWrapper(context.Background(), inputPath, *passwordFlag, expirySeconds, serverUrl, *encryptFlag, *lanFlag, *qrFlag, *noQrFlag)
 	if err != nil {
 		// Offline-first grace fallback: queue upload
 		fmt.Printf("\n[Offline Fallback] Server is unreachable or upload failed: %v\n", err)
@@ -383,6 +387,11 @@ func handleSend(args []string) {
 	fmt.Printf("Expires:\n%s\n\n", *expireFlag)
 	fmt.Printf("Size:\n%s\n", formatBytes(size))
 
+	if *encryptFlag {
+		fmt.Println("\n⚠️  Security Notice: The decryption key is embedded inside the share link and code.")
+		fmt.Println("   Ensure you share them securely, as they will appear in command history and server logs.")
+	}
+
 	// Display QR code on completion
 	showQR := false
 	if *qrFlag {
@@ -399,17 +408,17 @@ func handleSend(args []string) {
 
 func performWatchUpload(filename string, flags SendFlags) (string, error) {
 	expSec, _ := parseDurationToSeconds(flags.Expire)
-	code, _, _, _, err := performCloudUploadWrapper(filename, flags.Password, expSec, flags.Server, flags.Encrypt, flags.Lan, false, true)
+	code, _, _, _, err := performCloudUploadWrapper(context.Background(), filename, flags.Password, expSec, flags.Server, flags.Encrypt, flags.Lan, false, true)
 	return code, err
 }
 
-func performQueueUpload(item *QueueItem) error {
+func performQueueUpload(ctx context.Context, item *QueueItem) error {
 	expSec, _ := parseDurationToSeconds(item.Flags.Expire)
-	_, _, _, _, err := performCloudUploadWrapper(item.Path, item.Flags.Password, expSec, item.Flags.Server, item.Flags.Encrypt, item.Flags.Lan, false, true)
+	_, _, _, _, err := performCloudUploadWrapper(ctx, item.Path, item.Flags.Password, expSec, item.Flags.Server, item.Flags.Encrypt, item.Flags.Lan, false, true)
 	return err
 }
 
-func performCloudUploadWrapper(inputPath string, password string, expirySeconds int, serverUrl string, isEncrypted bool, enableLan bool, qrFlag bool, noQrFlag bool) (string, string, string, int64, error) {
+func performCloudUploadWrapper(ctx context.Context, inputPath string, password string, expirySeconds int, serverUrl string, isEncrypted bool, enableLan bool, qrFlag bool, noQrFlag bool) (string, string, string, int64, error) {
 	cfg := LoadConfig()
 	fileInfo, err := os.Stat(inputPath)
 	if err != nil {
@@ -610,7 +619,12 @@ func performCloudUploadWrapper(inputPath string, password string, expirySeconds 
 		state, err := LoadResumeState(stateFilename)
 		if err == nil && state.Valid() && state.SHA256 == hashHex && state.FileSize == fileInfo.Size() {
 			partsUrl := fmt.Sprintf("%s/api/v1/share/%s/parts", serverUrl, state.ShareId)
-			partsResp, err := http.Get(partsUrl)
+			partsReq, err := http.NewRequestWithContext(ctx, "GET", partsUrl, nil)
+			var partsResp *http.Response
+			if err == nil {
+				client := &http.Client{Timeout: 30 * time.Second}
+				partsResp, err = client.Do(partsReq)
+			}
 			if err == nil && partsResp.StatusCode == 200 {
 				var partsData struct {
 					UploadId string     `json:"uploadId"`
@@ -673,13 +687,18 @@ func performCloudUploadWrapper(inputPath string, password string, expirySeconds 
 			return "", "", "", 0, err
 		}
 
+		// Generate stable idempotency key based on unique upload properties
+		keyData := fmt.Sprintf("%s_%d_%s_%d_%v", hashHex, fileInfo.Size(), password, expirySeconds, isEncrypted)
+		keyHash := sha256.Sum256([]byte(keyData))
+		idempotencyKey := fmt.Sprintf("cli_%s", hex.EncodeToString(keyHash[:])[:24])
+
 		initUrl := fmt.Sprintf("%s/api/v1/share/init", serverUrl)
-		req, err := http.NewRequest("POST", initUrl, bytes.NewBuffer(jsonBytes))
+		req, err := http.NewRequestWithContext(ctx, "POST", initUrl, bytes.NewBuffer(jsonBytes))
 		if err != nil {
 			return "", "", "", 0, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Idempotency-Key", fmt.Sprintf("cli_%d_%s", time.Now().UnixNano(), hashHex[:8]))
+		req.Header.Set("Idempotency-Key", idempotencyKey)
 
 		client := &http.Client{Timeout: 30 * time.Second}
 		resp, err := client.Do(req)
@@ -763,7 +782,7 @@ func performCloudUploadWrapper(inputPath string, password string, expirySeconds 
 				}
 
 				partUploadUrl := initResp.UploadUrls[i-1]
-				putReq, err := http.NewRequest("PUT", partUploadUrl, bytes.NewReader(chunk))
+				putReq, err := http.NewRequestWithContext(ctx, "PUT", partUploadUrl, bytes.NewReader(chunk))
 				if err != nil {
 					return "", "", "", 0, err
 				}
@@ -820,7 +839,7 @@ func performCloudUploadWrapper(inputPath string, password string, expirySeconds 
 			printer: printer,
 		}
 
-		putReq, err := http.NewRequest("PUT", initResp.UploadUrl, progressReader)
+		putReq, err := http.NewRequestWithContext(ctx, "PUT", initResp.UploadUrl, progressReader)
 		if err != nil {
 			return "", "", "", 0, err
 		}
@@ -851,7 +870,7 @@ func performCloudUploadWrapper(inputPath string, password string, expirySeconds 
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	confirmReqObj, err := http.NewRequest("POST", confirmUrl, confirmBody)
+	confirmReqObj, err := http.NewRequestWithContext(ctx, "POST", confirmUrl, confirmBody)
 	if err != nil {
 		return "", "", "", 0, err
 	}

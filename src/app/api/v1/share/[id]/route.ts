@@ -11,7 +11,23 @@ export async function GET(
     const db = await getDb();
 
     // Find the active share
-    const share = await db.collection("shares").findOne({ $or: [{ shareId: id }, { downloadCode: id }] });
+    const share = await db.collection("shares").findOne(
+      { $or: [{ shareId: id }, { downloadCode: id }] },
+      {
+        projection: {
+          shareId: 1,
+          filename: 1,
+          size: 1,
+          mimeType: 1,
+          hashValue: 1,
+          passwordHash: 1,
+          isEncrypted: 1,
+          createdAt: 1,
+          expiresAt: 1,
+          status: 1,
+        },
+      }
+    );
     if (!share) {
       return NextResponse.json({ error: "Share not found" }, { status: 404 });
     }

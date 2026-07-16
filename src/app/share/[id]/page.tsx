@@ -16,20 +16,7 @@ export default async function SharePage(props: { params: Promise<{ id: string }>
     notFound();
   }
 
-  let serverDownloadUrl = "";
-  if (!share.passwordHash) {
-    try {
-      serverDownloadUrl = await getPresignedDownloadUrl(
-        share.objectKey,
-        600, // 10 minutes expiry
-        share.storageFilename,
-        share.mimeType,
-        false
-      );
-    } catch (e) {
-      console.error("Failed to pre-generate download URL:", e);
-    }
-  }
+  const serverDownloadUrl = "";
 
   const shareMeta = {
     shareId: share.shareId,

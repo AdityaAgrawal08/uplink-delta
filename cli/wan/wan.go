@@ -3,6 +3,7 @@ package wan
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -82,12 +83,12 @@ func ServeFileWAN(ctx context.Context, shareCode string, filePath string, passwo
 
 		buf := make([]byte, 256)
 		n, err := s.Read(buf)
-		if err != nil || string(buf[:n]) != shareCode {
+		if err != nil || subtle.ConstantTimeCompare(buf[:n], []byte(shareCode)) != 1 {
 			return
 		}
 
 		n, err = s.Read(buf)
-		if err != nil || string(buf[:n]) != password {
+		if err != nil || subtle.ConstantTimeCompare(buf[:n], []byte(password)) != 1 {
 			return
 		}
 

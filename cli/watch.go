@@ -24,7 +24,19 @@ func WatchDirectory(dir string, flags SendFlags) error {
 	}
 	defer watcher.Close()
 
-	err = watcher.Add(dir)
+	// Add all subdirectories recursively to the watcher
+	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if shouldSkip(path) && path != dir {
+				return filepath.SkipDir
+			}
+			return watcher.Add(path)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
@@ -63,7 +75,22 @@ func WatchDirectory(dir string, flags SendFlags) error {
 				return nil
 			}
 			if event.Op&(fsnotify.Create|fsnotify.Write) != 0 {
-				debounce <- event.Name
+				info, err := os.Stat(event.Name)
+				if err == nil && info.IsDir() {
+					if !shouldSkip(event.Name) {
+						// Recursively add new directory to watcher
+						_ = filepath.Walk(event.Name, func(path string, walkInfo os.FileInfo, walkErr error) error {
+							if walkErr == nil && walkInfo.IsDir() {
+								if !shouldSkip(path) {
+									_ = watcher.Add(path)
+								}
+							}
+							return nil
+						})
+					}
+				} else {
+					debounce <- event.Name
+				}
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {

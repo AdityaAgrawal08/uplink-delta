@@ -3,7 +3,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { getDb } from "@/lib/mongodb";
-import { checkObjectExists, completeMultipartUpload, s3Client } from "@/lib/r2";
+import { checkObjectExists, completeMultipartUpload, s3Client, calculateS3ObjectHash } from "@/lib/r2";
 import { anonymizeIp } from "@/lib/crypto";
 import { commitUploadQuota, releaseUploadQuota } from "@/lib/quota";
 import { apiError } from "@/lib/api-utils";
@@ -187,9 +187,12 @@ export async function POST(
             verified = true;
           }
         } else {
-          // Fall back to size verification if object storage provider doesn't support SHA-256 headers
-          if (objDetails.size === share.size) {
-            verified = true;
+          // If R2/S3 head doesn't return ChecksumSHA256, calculate the actual SHA-256 of the object content from R2
+          try {
+            const computed = await calculateS3ObjectHash(share.objectKey);
+            verified = computed.toLowerCase() === expectedHex;
+          } catch (e) {
+            console.error("Failed to compute SHA-256 for validation fallback:", e);
           }
         }
       }

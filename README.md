@@ -6,10 +6,16 @@ Built with a **Go stdlib-first** philosophy, the CLI client performs zero-buffer
 
 > [!NOTE]
 > **Latest Release: v3.1.2**
+> * **Security & Timing Attack Protection**: Implemented constant-time checks for P2P authentication.
+> * **Download Limit Counter Enforcement**: Refactored the web preview component to dynamically authorize downloads, preventing download limit bypasses.
 > * **Critical E2EE Overflow Fix**: Resolved a 2-byte chunk size limit overflow issue by adjusting the chunk limit to 65,519 bytes, permitting decryption of files larger than 64KB.
+> * **E2EE warnings**: Added security notifications inside CLI stdout highlighting key exposure risks in command history.
+> * **R2 Hash Verification Fallback**: Computes actual SHA-256 from object storage when hash headers are absent.
 > * **Accurate Directory Size Checks**: Replaced the directory metadata size check with a recursive size calculation of all files inside the directory before uploading or queueing.
 > * **Atomic LAN Share Limits**: Enforced atomic compare-and-swap checks for LAN download limits to resolve race conditions under concurrent client downloads.
+> * **Lifecycle Context Propagation**: Propagated cancellation context down to all HTTP and multipart upload calls.
 > * **Idempotency Cache Correction**: Aligned Next.js API idempotency key expiration with the 2-hour presigned URL duration to prevent expired presigned URLs from being cached and reused.
+> * **Secure PRNG for Share Codes**: Replaced weak pseudo-random generation with cryptographically secure generation for share codes.
 
 ---
 

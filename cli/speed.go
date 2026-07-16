@@ -23,7 +23,8 @@ func (ac *AdaptiveChunker) Measure(serverUrl string) (float64, error) {
 	speedtestUrl := fmt.Sprintf("%s/api/v1/speedtest", serverUrl)
 	start := time.Now()
 
-	resp, err := http.Get(speedtestUrl)
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(speedtestUrl)
 	if err != nil {
 		return 0, err
 	}

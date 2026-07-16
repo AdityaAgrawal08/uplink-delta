@@ -127,7 +127,7 @@ export async function POST(
     const isSafePreview = SAFE_PREVIEW_TYPES.includes(share.mimeType);
     const wantPreview = preview === true && isSafePreview;
 
-    const downloadUrlExpiry = 60; // 1m expiry for download link
+    const downloadUrlExpiry = 3600; // 1h expiry for download link
     const downloadUrl = await getPresignedDownloadUrl(
       share.objectKey,
       downloadUrlExpiry,

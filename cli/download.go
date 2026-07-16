@@ -138,7 +138,11 @@ func DownloadResumable(url, dest string, expectedHash string, progressPrinter fu
 		}
 	}
 
-	f.Close()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(partialFile)
+		_ = os.Remove(metadataFile)
+		return fmt.Errorf("failed to close file: %w", err)
+	}
 
 	finalHash := hex.EncodeToString(runningHasher.Sum(nil))
 	if finalHash != expectedHash {
@@ -147,6 +151,9 @@ func DownloadResumable(url, dest string, expectedHash string, progressPrinter fu
 		if err != nil || computed != expectedHash {
 			_ = os.Remove(partialFile)
 			_ = os.Remove(metadataFile)
+			if err != nil {
+				return fmt.Errorf("SHA-256 verification error: %w", err)
+			}
 			return fmt.Errorf("SHA-256 verification failed (expected %s, got %s)", expectedHash, finalHash)
 		}
 	}
