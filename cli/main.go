@@ -29,6 +29,7 @@ import (
 	"github.com/AdityaAgrawal08/uplink-delta/cli/pkg/tarball"
 	"golang.org/x/term"
 	"github.com/AdityaAgrawal08/uplink-delta/cli/lan"
+	"github.com/AdityaAgrawal08/uplink-delta/cli/wan"
 )
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
@@ -108,6 +109,8 @@ func main() {
 		handleSend(os.Args[2:])
 	case "receive":
 		handleReceive(os.Args[2:])
+	case "session":
+		handleSessionSubcommand(os.Args[2:])
 	case "config":
 		handleConfigSubcommand(os.Args[2:])
 	case "clean":
@@ -148,6 +151,10 @@ func printUsage() {
 	
 	fmt.Println("  receive     Download a file or directory")
 	fmt.Println("              uplink receive 4827165038")
+	fmt.Println()
+
+	fmt.Println("  session     Collaborate and share files in real-time sessions")
+	fmt.Println("              uplink session create")
 	fmt.Println()
 
 	fmt.Println("  config      Manage client configuration options")
@@ -359,6 +366,19 @@ func handleSend(args []string) {
 	}
 
 	serverUrl := sanitizeServerUrl(*serverFlag)
+
+	// Check if active session exists
+	sess, err := LoadActiveSession()
+	if err == nil && sess != nil {
+		fmt.Printf("Active session detected (ID: %s). Uploading file to session...\n", sess.SessionId)
+		err = performSessionUpload(sess, inputPath, *encryptFlag)
+		if err != nil {
+			fmt.Printf("✗ Session upload failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("\n✓ Upload completed and announced to session!")
+		os.Exit(0)
+	}
 
 	// Perform actual upload with fallback to queue if offline
 	code, shareLink, filename, size, err := performCloudUploadWrapper(context.Background(), inputPath, *passwordFlag, expirySeconds, serverUrl, *encryptFlag, *lanFlag, *qrFlag, *noQrFlag)
@@ -939,6 +959,104 @@ func handleReceive(args []string) {
 	if err != nil {
 		fmt.Println("Error parsing flags:", err)
 		os.Exit(1)
+	}
+
+	// Active session integration for receive
+	sess, err := LoadActiveSession()
+	if err == nil && sess != nil {
+		if recvCmd.NArg() < 1 {
+			// No filename: open TUI file picker
+			StartTUI(sess)
+			os.Exit(0)
+		} else {
+			// With filename: downloads directly, opens TUI only on name collision
+			filename := recvCmd.Arg(0)
+			url := fmt.Sprintf("%s/api/v1/session/%s/files", sess.Server, sess.SessionId)
+			resp, err := http.Get(url)
+			if err != nil {
+				fmt.Printf("✗ Error fetching session files: %v\n", err)
+				os.Exit(1)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode == 200 {
+				var res SessionFilesResponse
+				if json.NewDecoder(resp.Body).Decode(&res) == nil {
+					var matches []FileItem
+					for _, f := range res.Files {
+						if strings.EqualFold(f.Filename, filename) {
+							matches = append(matches, f)
+						}
+					}
+					if len(matches) == 1 {
+						file := matches[0]
+						destDir := cfg.DownloadDir
+						if destDir == "" {
+							destDir, _ = os.Getwd()
+						}
+						destPath := filepath.Join(destDir, file.Filename)
+						
+						fmt.Printf("Downloading %s from session...\n", file.Filename)
+						
+						p2pSuccess := false
+						var uploaderPeerID string
+						var uploaderAddrs []string
+						for _, p := range res.Participants {
+							if p.Username == file.Username && p.PeerID != "" && len(p.Addrs) > 0 {
+								uploaderPeerID = p.PeerID
+								uploaderAddrs = p.Addrs
+								break
+							}
+						}
+						if uploaderPeerID != "" && len(uploaderAddrs) > 0 {
+							fmt.Println("Attempting P2P direct transfer...")
+							ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+							defer cancel()
+							err = wan.DownloadFileWAN(ctx, file.ShareId, destPath, sess.Password, file.SHA256, func(written int64) {
+								fmt.Printf("\rDownloaded: %s", formatBytes(written))
+							})
+							if err == nil {
+								p2pSuccess = true
+								fmt.Println("\n✓ Download completed via P2P!")
+								os.Exit(0)
+							}
+							os.Remove(destPath)
+						}
+						
+						if !p2pSuccess {
+							dlUrl := fmt.Sprintf("%s/api/v1/session/%s/download/%s", sess.Server, sess.SessionId, file.FileId)
+							dlResp, err := http.Post(dlUrl, "application/json", nil)
+							if err != nil {
+								fmt.Printf("✗ Error: %v\n", err)
+								os.Exit(1)
+							}
+							defer dlResp.Body.Close()
+							if dlResp.StatusCode == 200 {
+								var dlRes SessionDownloadResponse
+								if json.NewDecoder(dlResp.Body).Decode(&dlRes) == nil {
+									err = DownloadResumable(dlRes.DownloadUrl, destPath, dlRes.HashValue, func(written int64, resumeOffset int64) {
+										fmt.Printf("\rDownloaded: %s", formatBytes(written))
+									})
+									if err == nil {
+										fmt.Println("\n✓ Download completed!")
+										os.Exit(0)
+									} else {
+										fmt.Printf("\n✗ Error: %v\n", err)
+										os.Exit(1)
+									}
+								}
+							} else {
+								fmt.Printf("✗ Download auth failed: status %d\n", dlResp.StatusCode)
+								os.Exit(1)
+							}
+						}
+					}
+				}
+			}
+			
+			fmt.Println("Filename not found or collision detected. Opening TUI file picker...")
+			StartTUI(sess)
+			os.Exit(0)
+		}
 	}
 
 	if recvCmd.NArg() < 1 {
