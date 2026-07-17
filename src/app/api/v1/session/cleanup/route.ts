@@ -1,12 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getDb } from "@/lib/mongodb";
 import { apiError } from "@/lib/api-utils";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   return performSessionCleanup();
 }
 
-export async function POST(req: NextRequest) {
+export async function POST() {
   return performSessionCleanup();
 }
 

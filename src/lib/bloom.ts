@@ -56,7 +56,7 @@ export class BloomFilter {
     };
   }
 
-  static fromJSON(json: { m: number; k: number; bits: any }): BloomFilter {
+  static fromJSON(json: { m: number; k: number; bits: string | Buffer | { buffer?: unknown; value?: () => Buffer } | unknown }): BloomFilter {
     let buf: Buffer;
     if (!json.bits) {
       buf = Buffer.alloc(Math.ceil(json.m / 8));
@@ -64,13 +64,22 @@ export class BloomFilter {
       buf = Buffer.from(json.bits, "base64");
     } else if (Buffer.isBuffer(json.bits)) {
       buf = json.bits;
-    } else if (json.bits.buffer && Buffer.isBuffer(json.bits.buffer)) {
-      buf = json.bits.buffer;
-    } else if (typeof json.bits.value === "function") {
-      // Handle mongodb.Binary object
-      buf = json.bits.value();
+    } else if (
+      json.bits &&
+      typeof json.bits === "object" &&
+      "buffer" in json.bits &&
+      Buffer.isBuffer((json.bits as { buffer: unknown }).buffer)
+    ) {
+      buf = (json.bits as { buffer: Buffer }).buffer;
+    } else if (
+      json.bits &&
+      typeof json.bits === "object" &&
+      "value" in json.bits &&
+      typeof (json.bits as { value: unknown }).value === "function"
+    ) {
+      buf = (json.bits as { value: () => Buffer }).value();
     } else {
-      buf = Buffer.from(json.bits);
+      buf = Buffer.from(json.bits as ArrayLike<number> | string);
     }
     return new BloomFilter(json.m, json.k, buf);
   }

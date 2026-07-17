@@ -20,7 +20,7 @@ export async function GET(
     );
 
     // 2. Fetch session files
-    const fileQuery: any = { sessionId };
+    const fileQuery: { sessionId: string; uploadedAt?: { $gt: Date } } = { sessionId };
     if (since) {
       const sinceDate = new Date(since);
       if (!isNaN(sinceDate.getTime())) {

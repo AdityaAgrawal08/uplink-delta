@@ -32,7 +32,12 @@ export async function POST(
     const now = new Date();
 
     // 2. Update participant heartbeat
-    const updateFields: any = {
+    const updateFields: {
+      lastHeartbeat: Date;
+      status: string;
+      peerId?: string;
+      addrs?: string[];
+    } = {
       lastHeartbeat: now,
       status: "ACTIVE",
     };

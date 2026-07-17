@@ -81,8 +81,9 @@ export async function POST(
     // In case of race conditions, unique index on { sessionId, username } will prevent duplicate insert
     try {
       await db.collection("session_participants").insertOne(participantDoc);
-    } catch (dbErr: any) {
-      if (dbErr.code === 11000) {
+    } catch (dbErr) {
+      const error = dbErr as { code?: number };
+      if (error.code === 11000) {
         return apiError("Username already taken", 409);
       }
       throw dbErr;
