@@ -32,7 +32,7 @@ func writePartialMetadata(sha256Path string, offset int64, hashHex string) error
 	return os.WriteFile(sha256Path, []byte(content), 0644)
 }
 
-func DownloadResumable(url, dest string, expectedHash string, progressPrinter func(int64)) error {
+func DownloadResumable(url, dest string, expectedHash string, progressPrinter func(int64, int64)) error {
 	partialFile := dest + ".uplink.partial"
 	metadataFile := partialFile + ".sha256"
 
@@ -118,7 +118,7 @@ func DownloadResumable(url, dest string, expectedHash string, progressPrinter fu
 			totalWritten += int64(nw)
 
 			if progressPrinter != nil {
-				progressPrinter(totalWritten)
+				progressPrinter(totalWritten, offset)
 			}
 
 			// Periodically save checkpoints (every 10 MB)

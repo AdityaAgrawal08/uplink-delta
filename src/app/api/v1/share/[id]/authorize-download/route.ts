@@ -39,11 +39,16 @@ export async function POST(
 
     // 1. Rate Limiting check
     const rateLimitKey = `rate:download:${ipHash}:${share.shareId}`;
-    if (share.passwordHash) {
-      const attemptsStr = await redis.get(rateLimitKey);
-      const attempts = typeof attemptsStr === "string" ? parseInt(attemptsStr, 10) : 0;
-      if (attempts > 5) {
-        return apiError("Too many failed attempts. Locked out for 5 minutes.", 429);
+    const attemptsStr = await redis.get(rateLimitKey);
+    const attempts = typeof attemptsStr === "string" ? parseInt(attemptsStr, 10) : 0;
+    if (attempts > 5) {
+      return apiError("Too many failed attempts. Locked out for 5 minutes.", 429);
+    }
+
+    if (!share.passwordHash) {
+      const currentAttempts = await redis.incr(rateLimitKey);
+      if (currentAttempts === 1) {
+        await redis.expire(rateLimitKey, 300); // 5-minute window
       }
     }
 
@@ -159,6 +164,10 @@ export async function POST(
     after(async () => {
       await performCleanup().catch(err => console.error("Background cleanup failed:", err));
     });
+
+    if (!share.passwordHash) {
+      await redis.del(rateLimitKey);
+    }
 
     return NextResponse.json({
       downloadUrl,

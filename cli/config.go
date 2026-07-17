@@ -38,7 +38,41 @@ func getConfigPath() string {
 func LoadConfig() *Config {
 	cfg := defaultConfig()
 
-	// 1. Env vars override defaults
+	// 1. Config file overrides defaults
+	path := getConfigPath()
+	if data, err := os.ReadFile(path); err == nil {
+		type fileConfig struct {
+			Server         *string `json:"server"`
+			Expiry         *string `json:"expiry"`
+			DownloadDir    *string `json:"download_dir"`
+			LanPort        *int    `json:"lan_port"`
+			AdaptiveChunks *bool   `json:"adaptive_chunks"`
+			ShowQR         *string `json:"show_qr"`
+		}
+		var fileCfg fileConfig
+		if json.Unmarshal(data, &fileCfg) == nil {
+			if fileCfg.Server != nil {
+				cfg.Server = *fileCfg.Server
+			}
+			if fileCfg.Expiry != nil {
+				cfg.Expiry = *fileCfg.Expiry
+			}
+			if fileCfg.DownloadDir != nil {
+				cfg.DownloadDir = *fileCfg.DownloadDir
+			}
+			if fileCfg.LanPort != nil {
+				cfg.LanPort = *fileCfg.LanPort
+			}
+			if fileCfg.AdaptiveChunks != nil {
+				cfg.AdaptiveChunks = *fileCfg.AdaptiveChunks
+			}
+			if fileCfg.ShowQR != nil {
+				cfg.ShowQR = *fileCfg.ShowQR
+			}
+		}
+	}
+
+	// 2. Env vars override config file (highest priority)
 	if s := os.Getenv("UPLINK_SERVER"); s != "" {
 		cfg.Server = s
 	}
@@ -60,31 +94,6 @@ func LoadConfig() *Config {
 	}
 	if q := os.Getenv("UPLINK_SHOW_QR"); q != "" {
 		cfg.ShowQR = q
-	}
-
-	// 2. Config file overrides defaults/env
-	path := getConfigPath()
-	if data, err := os.ReadFile(path); err == nil {
-		var fileCfg Config
-		if json.Unmarshal(data, &fileCfg) == nil {
-			if fileCfg.Server != "" {
-				cfg.Server = fileCfg.Server
-			}
-			if fileCfg.Expiry != "" {
-				cfg.Expiry = fileCfg.Expiry
-			}
-			if fileCfg.DownloadDir != "" {
-				cfg.DownloadDir = fileCfg.DownloadDir
-			}
-			if fileCfg.LanPort != 0 {
-				cfg.LanPort = fileCfg.LanPort
-			}
-			// For boolean fields we can check if it exists or override unconditionally
-			cfg.AdaptiveChunks = fileCfg.AdaptiveChunks
-			if fileCfg.ShowQR != "" {
-				cfg.ShowQR = fileCfg.ShowQR
-			}
-		}
 	}
 
 	return cfg

@@ -214,7 +214,15 @@ func sanitizeServerUrl(serverUrl string) string {
 	if !strings.HasPrefix(serverUrl, "http://") && !strings.HasPrefix(serverUrl, "https://") {
 		serverUrl = "https://" + serverUrl
 	} else if strings.HasPrefix(serverUrl, "http://") {
-		if !strings.Contains(serverUrl, "localhost") && !strings.Contains(serverUrl, "127.0.0.1") {
+		parsed, err := url.Parse(serverUrl)
+		if err != nil {
+			return serverUrl
+		}
+		host := parsed.Hostname()
+		ip := net.ParseIP(host)
+		isPrivate := ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast())
+		isInternalDomain := host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal")
+		if !isPrivate && !isInternalDomain {
 			fmt.Println("Warning: Upgrading insecure HTTP to HTTPS")
 			serverUrl = "https://" + strings.TrimPrefix(serverUrl, "http://")
 		}
@@ -1297,7 +1305,11 @@ func handleReceive(args []string) {
 	}
 
 	if rangeSupported {
-		err = DownloadResumable(authData.DownloadUrl, tempTarFile, meta.HashValue, func(written int64) {
+		err = DownloadResumable(authData.DownloadUrl, tempTarFile, meta.HashValue, func(written int64, resumeOffset int64) {
+			if printer.resumeOffset == 0 && resumeOffset > 0 {
+				printer.resumeOffset = resumeOffset
+				printer.resumeTime = time.Now()
+			}
 			printer.Print(written)
 		})
 	} else {
@@ -1413,12 +1425,14 @@ func handleWatch(args []string) {
 }
 
 type ProgressPrinter struct {
-	title      string
-	total      int64
-	startTime  time.Time
-	lastPrint  time.Time
-	firstPrint bool
-	isFinished bool
+	title        string
+	total        int64
+	startTime    time.Time
+	lastPrint    time.Time
+	firstPrint   bool
+	isFinished   bool
+	resumeOffset int64
+	resumeTime   time.Time
 }
 
 func (pp *ProgressPrinter) Print(read int64) {
@@ -1436,12 +1450,19 @@ func (pp *ProgressPrinter) Print(read int64) {
 
 	elapsed := time.Since(pp.startTime).Seconds()
 	speed := 0.0
-	if elapsed > 0 {
+	if pp.resumeOffset > 0 && !pp.resumeTime.IsZero() {
+		elapsedResume := time.Since(pp.resumeTime).Seconds()
+		if elapsedResume > 0 {
+			speed = float64(read - pp.resumeOffset) / elapsedResume
+		}
+	} else if elapsed > 0 {
 		speed = float64(read) / elapsed
 	}
 
 	etaStr := "Calculating..."
-	if speed > 0 && pp.total > 0 {
+	if pp.resumeOffset > 0 && read <= pp.resumeOffset {
+		etaStr = "Resuming..."
+	} else if speed > 0 && pp.total > 0 {
 		remainingBytes := pp.total - read
 		etaSeconds := float64(remainingBytes) / speed
 		if etaSeconds <= 0 {

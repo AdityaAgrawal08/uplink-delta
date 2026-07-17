@@ -1,67 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import hljs from "highlight.js";
+import "highlight.js/styles/github-dark.css";
+import DOMPurify from "isomorphic-dompurify";
 
 interface Props {
   code: string;
   language: string;
 }
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-interface Hljs {
-  highlight: (code: string, options: { language: string }) => { value: string };
-  highlightAuto: (code: string) => { value: string };
-}
-
 export default function SyntaxHighlighter({ code, language }: Props) {
-  const [html, setHtml] = useState<string>("<pre><code>" + escapeHtml(code) + "</code></pre>");
+  let highlightedValue = "";
+  try {
+    const result = hljs.highlight(code, { language });
+    highlightedValue = `<pre class="hljs"><code class="language-${language}">${result.value}</code></pre>`;
+  } catch {
+    const result = hljs.highlightAuto(code);
+    highlightedValue = `<pre class="hljs"><code>${result.value}</code></pre>`;
+  }
 
-  useEffect(() => {
-    if (!document.getElementById("hljs-theme")) {
-      const link = document.createElement("link");
-      link.id = "hljs-theme";
-      link.rel = "stylesheet";
-      link.href = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css";
-      document.head.appendChild(link);
-    }
+  // Sanitize the output to prevent any potential XSS vulnerabilities
+  const sanitizedHtml = DOMPurify.sanitize(highlightedValue);
 
-    const scriptId = "hljs-script";
-    let script = document.getElementById(scriptId) as HTMLScriptElement;
-    
-    const highlight = () => {
-      const hljs = (window as unknown as { hljs?: Hljs }).hljs;
-      if (hljs) {
-        try {
-          const result = hljs.highlight(code, { language });
-          setHtml(`<pre class="hljs"><code class="language-${language}">${result.value}</code></pre>`);
-        } catch {
-          const result = hljs.highlightAuto(code);
-          setHtml(`<pre class="hljs"><code>${result.value}</code></pre>`);
-        }
-      }
-    };
-
-    if (!script) {
-      script = document.createElement("script");
-      script.id = scriptId;
-      script.src = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js";
-      script.onload = highlight;
-      document.head.appendChild(script);
-    } else if ((window as unknown as { hljs?: Hljs }).hljs) {
-      highlight();
-    } else {
-      script.addEventListener("load", highlight);
-      return () => script.removeEventListener("load", highlight);
-    }
-  }, [code, language]);
-
-  return <div dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div dangerouslySetInnerHTML={{ __html: sanitizedHtml }} />;
 }

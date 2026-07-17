@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
 import { getDb } from "@/lib/mongodb";
 import { deleteObject } from "@/lib/r2";
 import { recordDeleteQuota, releaseUploadQuota } from "@/lib/quota";
@@ -44,20 +45,38 @@ export async function performCleanup() {
       ],
     };
 
-    const lockUpdate = {
-      $set: {
-        status: "PENDING_DELETE",
-        cleanupLockedUntil,
-        cleanupWorkerId: workerId,
-        lastRetryAt: now,
+    const lockUpdate = [
+      {
+        $set: {
+          originalStatus: {
+            $cond: {
+              if: { $in: ["$status", ["PENDING_DELETE", "DELETE_FAILED"]] },
+              then: { $ifNull: ["$originalStatus", "ACTIVE"] },
+              else: "$status",
+            },
+          },
+          status: "PENDING_DELETE",
+          cleanupLockedUntil: cleanupLockedUntil,
+          cleanupWorkerId: workerId,
+          lastRetryAt: now,
+          retryCount: { $add: [{ $ifNull: ["$retryCount", 0] }, 1] },
+        },
       },
-      $inc: { retryCount: 1 },
-    };
+    ];
 
-    // 1. Identify expired shares first to preserve their original status
-    const candidates = await db.collection("shares").find(lockQuery).toArray();
-    
-    if (candidates.length === 0) {
+    // 1. Lock all eligible shares atomically
+    const lockResult = await db.collection("shares").updateMany(lockQuery, lockUpdate);
+
+    // 2. Fetch locked shares for this worker
+    const lockedShares = await db
+      .collection("shares")
+      .find({
+        status: "PENDING_DELETE",
+        cleanupWorkerId: workerId,
+      })
+      .toArray();
+
+    if (lockedShares.length === 0) {
       // 4. Also clean up old upload sessions metadata that are completed or expired
       const uploadSessionsCleanupResult = await db.collection("upload_sessions").deleteMany({
         $or: [
@@ -71,30 +90,11 @@ export async function performCleanup() {
       });
     }
 
-    const candidateIds = candidates.map(c => c._id);
-    const lockResult = await db.collection("shares").updateMany(
-      { _id: { $in: candidateIds } },
-      lockUpdate
-    );
-
-    // Create a lookup map for candidates by shareId to retrieve their original status
-    const candidateMap = new Map(candidates.map(c => [c.shareId, c]));
-
-    // 2. Fetch locked shares for this worker
-    const lockedShares = await db
-      .collection("shares")
-      .find({
-        status: "PENDING_DELETE",
-        cleanupWorkerId: workerId,
-      })
-      .toArray();
-
     const results = [];
 
     // 3. Process deletions
     for (const share of lockedShares) {
-      const originalShare = candidateMap.get(share.shareId);
-      const originalStatus = originalShare ? originalShare.status : "ACTIVE";
+      const originalStatus = share.originalStatus || "ACTIVE";
 
       const deleteSuccess = await deleteObject(share.objectKey);
       
@@ -110,6 +110,7 @@ export async function performCleanup() {
             },
             $unset: {
               downloadCode: "",
+              originalStatus: "",
             },
           }
         );

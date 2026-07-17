@@ -187,6 +187,9 @@ export async function POST(req: NextRequest) {
     let isCodeUnique = false;
     let codeAttempts = 0;
     while (!isCodeUnique && codeAttempts < 10) {
+      if (codeAttempts > 0) {
+        await new Promise(r => setTimeout(r, 50)); // minimal backoff
+      }
       downloadCode = "";
       for (let i = 0; i < 10; i++) {
         downloadCode += crypto.randomInt(0, 10).toString();
